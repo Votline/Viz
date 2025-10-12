@@ -1,15 +1,16 @@
 package routers
 
 import (
-	"log"
 	"time"
 	"net/http"
+
+	"go.uber.org/zap"
 
 	"Viz/internal/audio"
 )
 
-func Setup() *http.Server {
-	mux := routing()
+func Setup(log *zap.Logger) *http.Server {
+	mux := routing(log)
 
 	srv := &http.Server{
 		Handler: mux,
@@ -22,13 +23,13 @@ func Setup() *http.Server {
 	return srv
 }
 
-func routing() *http.ServeMux {
+func routing(log *zap.Logger) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request){
-		log.Println("Starting")
-		audio.Start()
-		log.Println("Done")
+		log.Info("Starting")
+		audio.Start(log)
+		log.Info("Done")
 	})
 
 	return mux

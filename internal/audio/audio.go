@@ -1,20 +1,23 @@
 package audio
 
 import (
-	"log"
 	"time"
 	
+	"go.uber.org/zap"
 	"github.com/gordonklaus/portaudio"
 )
 
-func Start() {
-	_, err := record()
+func Start(log *zap.Logger) {
+	pcm, err := record(log)
 	if err != nil {
-		log.Fatalf("\nRecord audio err: %s\n", err.Error())
+		log.Fatal("\nRecord audio err: ", zap.Error(err))
+	}
+	if err := play(pcm, log); err != nil {
+		log.Fatal("\nPlay audio err: ", zap.Error(err))
 	}
 }
 
-func record() ([]int16, error) {
+func record(log *zap.Logger) ([]int16, error) {
 	if err := portaudio.Initialize(); err != nil {
 		return nil, err
 	}
@@ -61,7 +64,7 @@ func record() ([]int16, error) {
 	}
 	defer stream.Close()
 
-	log.Printf("Recording")
+	log.Info("Recording")
 	if err := stream.Start(); err != nil {
 		return nil, err
 	}
@@ -71,4 +74,52 @@ func record() ([]int16, error) {
 	stream.Stop()
 
 	return pcm, nil
+}
+
+func play(pcm []int16, log *zap.Logger) error {
+	if err := portaudio.Initialize(); err != nil {
+		return err
+	}
+
+	dev, err := portaudio.DefaultOutputDevice()
+	if err != nil {
+		return err
+	}
+
+	channels := 1
+	bufferSize := 8192
+	sampleRate := 44100.0
+
+	var playIdx int
+	stream, err := portaudio.OpenStream(
+		portaudio.StreamParameters{
+			Input: portaudio.StreamDeviceParameters{
+				Channels: 0,
+			},
+			Output: portaudio.StreamDeviceParameters{
+				Device: dev,
+				Channels: channels,
+			},
+			SampleRate: sampleRate,
+			FramesPerBuffer: bufferSize,
+		},
+		func (in, out []float32) {
+			for i := range out {
+				if playIdx < len(pcm) {
+					out[i] = float32(pcm[playIdx])/32767.0 * 2.0
+					playIdx++
+				}
+			}
+		},
+	)
+	defer stream.Close()
+
+	log.Info("Playing")
+	stream.Start()
+	for playIdx < len(pcm) {
+		time.Sleep(10*time.Millisecond)
+	}
+	stream.Stop()
+
+	return nil
 }
