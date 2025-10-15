@@ -2,10 +2,59 @@ package audio
 
 import (
 	"time"
+	"sync"
+	"fmt"
 	
 	"go.uber.org/zap"
 	"github.com/gordonklaus/portaudio"
 )
+
+type audioBuffer struct {
+	vol float32
+	pcm []int16
+	wPos int
+	rPos int
+	mu sync.Mutex
+}
+func (b *audioBuffer) write(samples []float32) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for _, sample := range samples {
+		if b.wPos < len(b.pcm) {
+			b.pcm[b.wPos] = int16(sample*32767)
+			b.wPos++
+		}
+	}
+}
+func (b *audioBuffer) data() []int16 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.pcm[:b.wPos]
+}
+func (b *audioBuffer) read(out []float32) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for i := range out {
+		if b.rPos < len(b.pcm) {
+			out[i] = float32(b.pcm[b.rPos])/32767 * b.vol
+			b.rPos++
+		} else {
+			out[i] = 0
+		}
+	}
+}
+func (b *audioBuffer) recorded() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.wPos < len(b.pcm)
+}
+func (b *audioBuffer) played() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.rPos >= len(b.pcm)
+}
 
 func Start(log *zap.Logger) {
 	pcm, err := record(log)
@@ -32,12 +81,11 @@ func record(log *zap.Logger) ([]int16, error) {
 	dur = 5*time.Second
 
 	channels := 1
-	bufferSize := 8192
+	bufferSize := 2048
 	sampleRate := 44100.0
 	totalSamples := int(dur.Seconds() * sampleRate * float64(channels))
-	pcm := make([]int16, totalSamples)
 
-	var recIdx int
+	buffer := &audioBuffer{pcm: make([]int16, totalSamples)}
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
 			Input: portaudio.StreamDeviceParameters{
@@ -51,12 +99,7 @@ func record(log *zap.Logger) ([]int16, error) {
 			FramesPerBuffer: bufferSize,
 		},
 		func (in []float32) {
-			for _, sample := range in {
-				if recIdx < len(pcm) {
-					pcm[recIdx] = int16(sample*32767)
-					recIdx++
-				}
-			}
+			buffer.write(in)
 		},
 	)
 	if err != nil {
@@ -68,18 +111,20 @@ func record(log *zap.Logger) ([]int16, error) {
 	if err := stream.Start(); err != nil {
 		return nil, err
 	}
-	for recIdx < len(pcm) {
+	for buffer.recorded() {
 		time.Sleep(10*time.Millisecond)
 	}
 	stream.Stop()
 
-	return pcm, nil
+	return buffer.data(), nil
 }
 
 func play(pcm []int16, log *zap.Logger) error {
+	fmt.Scanln()
 	if err := portaudio.Initialize(); err != nil {
 		return err
 	}
+	defer portaudio.Terminate()
 
 	dev, err := portaudio.DefaultOutputDevice()
 	if err != nil {
@@ -87,10 +132,10 @@ func play(pcm []int16, log *zap.Logger) error {
 	}
 
 	channels := 1
-	bufferSize := 8192
+	bufferSize := 2048
 	sampleRate := 44100.0
 
-	var playIdx int
+	buffer := &audioBuffer{pcm: pcm, vol: 1.0}
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
 			Input: portaudio.StreamDeviceParameters{
@@ -104,21 +149,17 @@ func play(pcm []int16, log *zap.Logger) error {
 			FramesPerBuffer: bufferSize,
 		},
 		func (in, out []float32) {
-			for i := range out {
-				if playIdx < len(pcm) {
-					out[i] = float32(pcm[playIdx])/32767.0 * 2.0
-					playIdx++
-				}
-			}
+			buffer.read(out)
 		},
 	)
 	defer stream.Close()
 
 	log.Info("Playing")
 	stream.Start()
-	for playIdx < len(pcm) {
+	for !buffer.played() {
 		time.Sleep(10*time.Millisecond)
 	}
+	time.Sleep(100*time.Millisecond)
 	stream.Stop()
 
 	return nil
