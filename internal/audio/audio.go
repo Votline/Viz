@@ -1,72 +1,24 @@
 package audio
 
 import (
-	"time"
-	"sync"
 	"fmt"
+	"time"
 	
 	"go.uber.org/zap"
 	"github.com/gordonklaus/portaudio"
 )
 
-type audioBuffer struct {
-	vol float32
-	pcm []int16
-	wPos int
-	rPos int
-	mu sync.Mutex
-}
-func (b *audioBuffer) write(samples []float32) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	for _, sample := range samples {
-		if b.wPos < len(b.pcm) {
-			b.pcm[b.wPos] = int16(sample*32767)
-			b.wPos++
-		}
-	}
-}
-func (b *audioBuffer) data() []int16 {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.pcm[:b.wPos]
-}
-func (b *audioBuffer) read(out []float32) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	for i := range out {
-		if b.rPos < len(b.pcm) {
-			out[i] = float32(b.pcm[b.rPos])/32767 * b.vol
-			b.rPos++
-		} else {
-			out[i] = 0
-		}
-	}
-}
-func (b *audioBuffer) recorded() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.wPos < len(b.pcm)
-}
-func (b *audioBuffer) played() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.rPos >= len(b.pcm)
-}
-
 func Start(log *zap.Logger) {
-	pcm, err := record(log)
+	opusBuffer, err := record(log)
 	if err != nil {
 		log.Fatal("\nRecord audio err: ", zap.Error(err))
 	}
-	if err := play(pcm, log); err != nil {
+	if err := play(opusBuffer, log); err != nil {
 		log.Fatal("\nPlay audio err: ", zap.Error(err))
 	}
 }
 
-func record(log *zap.Logger) ([]int16, error) {
+func record(log *zap.Logger) ([]byte, error) {
 	if err := portaudio.Initialize(); err != nil {
 		return nil, err
 	}
@@ -81,8 +33,9 @@ func record(log *zap.Logger) ([]int16, error) {
 	dur = 5*time.Second
 
 	channels := 1
+	bitrate := 32000
 	bufferSize := 2048
-	sampleRate := 44100.0
+	sampleRate := 48000.0
 	totalSamples := int(dur.Seconds() * sampleRate * float64(channels))
 
 	buffer := &audioBuffer{pcm: make([]int16, totalSamples)}
@@ -116,10 +69,19 @@ func record(log *zap.Logger) ([]int16, error) {
 	}
 	stream.Stop()
 
-	return buffer.data(), nil
+	opusBuffer, err := buffer.encodeOPUS(int(sampleRate), channels, bitrate, buffer.data(), log)
+	if err != nil {
+		log.Error("Encode PCM to OPUS failed: ", zap.Error(err))
+		return nil, err
+	}
+	return opusBuffer, nil
 }
 
-func play(pcm []int16, log *zap.Logger) error {
+func play(opusBuffer []byte, log *zap.Logger) error {
+	if len(opusBuffer) == 0 {
+		log.Error("Empty OPUS buffer")
+		return nil
+	}
 	fmt.Scanln()
 	if err := portaudio.Initialize(); err != nil {
 		return err
@@ -133,9 +95,16 @@ func play(pcm []int16, log *zap.Logger) error {
 
 	channels := 1
 	bufferSize := 2048
-	sampleRate := 44100.0
+	sampleRate := 48000.0
 
-	buffer := &audioBuffer{pcm: pcm, vol: 1.0}
+	buffer := &audioBuffer{vol: 1.0}
+	pcm, err := buffer.decodeOPUS(bufferSize, int(sampleRate), channels, opusBuffer, log)
+	if err != nil {
+		log.Error("Decode OPUS to PCM failed: ", zap.Error(err))
+		return err
+	}
+	buffer.setPCM(pcm)
+
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
 			Input: portaudio.StreamDeviceParameters{
