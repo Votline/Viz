@@ -1,109 +1,120 @@
 package audio
 
 import (
-	"fmt"
 	"time"
 	
 	"go.uber.org/zap"
 	"github.com/gordonklaus/portaudio"
 )
 
-func Start(log *zap.Logger) {
-	opusBuffer, err := record(log)
-	if err != nil {
-		log.Fatal("\nRecord audio err: ", zap.Error(err))
-	}
-	if err := play(opusBuffer, log); err != nil {
-		log.Fatal("\nPlay audio err: ", zap.Error(err))
-	}
+type AudioStream struct {
+	log *zap.Logger
+	bitrate int
+	channels int
+	bufferSize int
+	sampleRate float64
+	stopChan chan bool
+	audioChan chan []byte
+	ab *audioBuffer
 }
 
-func record(log *zap.Logger) ([]byte, error) {
-	if err := portaudio.Initialize(); err != nil {
-		return nil, err
-	}
-	defer portaudio.Terminate()
-
-	dev, err := portaudio.DefaultInputDevice()
+func NewAS(log *zap.Logger) *AudioStream {
+	ab, err := newAB(1.0, 32000, 48000, 1, log)
 	if err != nil {
-		return nil, err
-	}
-
-	var dur time.Duration
-	dur = 5*time.Second
-
-	channels := 1
-	bitrate := 32000
-	bufferSize := 2048
-	sampleRate := 48000.0
-	totalSamples := int(dur.Seconds() * sampleRate * float64(channels))
-
-	buffer := &audioBuffer{pcm: make([]int16, totalSamples)}
-	stream, err := portaudio.OpenStream(
-		portaudio.StreamParameters{
-			Input: portaudio.StreamDeviceParameters{
-				Device: dev,
-				Channels: channels,
-			},
-			Output: portaudio.StreamDeviceParameters{
-				Channels: 0,
-			},
-			SampleRate: sampleRate,
-			FramesPerBuffer: bufferSize,
-		},
-		func (in []float32) {
-			buffer.write(in)
-		},
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer stream.Close()
-
-	log.Info("Recording")
-	if err := stream.Start(); err != nil {
-		return nil, err
-	}
-	for buffer.recorded() {
-		time.Sleep(10*time.Millisecond)
-	}
-	stream.Stop()
-
-	opusBuffer, err := buffer.encodeOPUS(int(sampleRate), channels, bitrate, buffer.data(), log)
-	if err != nil {
-		log.Error("Encode PCM to OPUS failed: ", zap.Error(err))
-		return nil, err
-	}
-	return opusBuffer, nil
-}
-
-func play(opusBuffer []byte, log *zap.Logger) error {
-	if len(opusBuffer) == 0 {
-		log.Error("Empty OPUS buffer")
+		log.Error("Create audio buffer error: ", zap.Error(err))
 		return nil
 	}
-	fmt.Scanln()
-	if err := portaudio.Initialize(); err != nil {
-		return err
-	}
-	defer portaudio.Terminate()
 
+	return &AudioStream{
+		ab: ab,
+		log: log,
+		channels: 1,
+		bitrate: 32000,
+		bufferSize: 2048,
+		sampleRate: 48000.0,
+		stopChan: make(chan bool),
+		audioChan: make(chan []byte, 10),
+	}
+}
+
+func (as *AudioStream) Start() {
+	go as.recordStream()
+	go as.playStream()
+}
+
+func (as *AudioStream) recordStream() {
+	dev, err := portaudio.DefaultInputDevice()
+	if err != nil {
+		return
+	}
+
+	samplesPer500ms := int(as.sampleRate * 0.5 * float64(as.channels))
+
+	as.ab.resetPCM(samplesPer500ms)
+	stream, err := portaudio.OpenStream(
+		portaudio.StreamParameters{
+			Input: portaudio.StreamDeviceParameters{
+				Device: dev,
+				Channels: as.channels,
+			},
+			Output: portaudio.StreamDeviceParameters{
+				Channels: 0,
+			},
+			SampleRate: as.sampleRate,
+			FramesPerBuffer: as.bufferSize,
+		},
+		func (in []float32) {
+			as.ab.write(in)
+		},
+	)
+	if err != nil {
+		return
+	}
+	defer stream.Close()
+
+	if err := stream.Start(); err != nil {
+		as.log.Error("Start recording stream error: ", zap.Error(err))
+		return
+	}
+
+	for {
+		select {
+		case <- as.stopChan:
+			as.log.Info("Stopping recording")
+			return
+		default:
+			time.Sleep(450 * time.Millisecond)
+			for !as.ab.recorded() {
+				time.Sleep(10 * time.Millisecond)
+				as.log.Info("DATA: \n", zap.Int("pcm", len(as.ab.pcm)), zap.Int("wPos", as.ab.wPos))
+			}
+
+			as.log.Info("I can record")
+
+			opusChunk, err := as.ab.encodeOPUS(int(as.sampleRate), as.channels, as.ab.data())
+			if err != nil {
+				as.log.Error("Encode PCM to OPUS failedL ", zap.Error(err))
+				continue
+			}
+			
+			as.log.Info("I going to full channel ", zap.Int("opusChunk: ", len(opusChunk)))
+
+			select {
+			case as.audioChan <- opusChunk:
+			case <- time.After(100 * time.Millisecond):
+				as.log.Warn("Channel full, dropping packet")
+			}
+
+			as.ab.resetPCM(samplesPer500ms)
+		}
+	}
+}
+
+func (as *AudioStream) playStream() {
 	dev, err := portaudio.DefaultOutputDevice()
 	if err != nil {
-		return err
+		return
 	}
-
-	channels := 1
-	bufferSize := 2048
-	sampleRate := 48000.0
-
-	buffer := &audioBuffer{vol: 1.0}
-	pcm, err := buffer.decodeOPUS(bufferSize, int(sampleRate), channels, opusBuffer, log)
-	if err != nil {
-		log.Error("Decode OPUS to PCM failed: ", zap.Error(err))
-		return err
-	}
-	buffer.setPCM(pcm)
 
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
@@ -112,24 +123,52 @@ func play(opusBuffer []byte, log *zap.Logger) error {
 			},
 			Output: portaudio.StreamDeviceParameters{
 				Device: dev,
-				Channels: channels,
+				Channels: as.channels,
 			},
-			SampleRate: sampleRate,
-			FramesPerBuffer: bufferSize,
+			SampleRate: as.sampleRate,
+			FramesPerBuffer: as.bufferSize,
 		},
 		func (in, out []float32) {
-			buffer.read(out)
+			as.ab.read(out)
 		},
 	)
+	if err != nil {
+		as.log.Error("Open output stream err: ", zap.Error(err))
+		return
+	}
 	defer stream.Close()
 
-	log.Info("Playing")
-	stream.Start()
-	for !buffer.played() {
-		time.Sleep(10*time.Millisecond)
+	if err := stream.Start(); err != nil {
+		as.log.Error("Open output stream error: ", zap.Error(err))
 	}
-	time.Sleep(100*time.Millisecond)
-	stream.Stop()
 
-	return nil
+	for {
+		select {
+		case <- as.stopChan:
+			as.log.Info("Stopping playback stream")
+			return
+		case opusChunk, ok := <- as.audioChan:
+			if !ok {
+				return
+			}
+
+			as.log.Info("Decoding new chunk: ", zap.Int("size", len(opusChunk)))
+
+			pcm, err := as.ab.decodeOPUS(as.bufferSize, int(as.sampleRate), as.channels, opusChunk)
+			if err != nil {
+				as.log.Error("Decode OPUS chunk failed: ", zap.Error(err))
+				continue
+			}
+			as.ab.setPCM(pcm)
+			as.ab.resetPlay()
+
+			as.log.Info("I going playback with ", zap.Int("pcm len:", len(as.ab.pcm)))
+			
+			for !as.ab.played() {
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
 }

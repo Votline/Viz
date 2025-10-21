@@ -32,10 +32,10 @@ func Setup(log *zap.Logger) *http.Server {
 func routing(log *zap.Logger, upg *websocket.Upgrader) *http.ServeMux {
 	mux := http.NewServeMux()
 
+	audioStream := audio.NewAS(log)
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request){
-		log.Info("Starting")
-		audio.Start(log)
-		log.Info("Done")
+		w.Write([]byte("use 'url/ws'"))
 	})
 
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request){
@@ -55,7 +55,7 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) *http.ServeMux {
 				log.Error("WS read failed: ", zap.Error(err))
 				break
 			}
-			go audio.Start(log)
+			go audioStream.Start()
 		}
 	})
 

@@ -3,8 +3,8 @@ package audio
 import (
 	"sync"
 
-	"go.uber.org/zap"
 	"github.com/jj11hh/opus"
+	"go.uber.org/zap"
 )
 
 type audioBuffer struct {
@@ -12,7 +12,31 @@ type audioBuffer struct {
 	pcm  []int16
 	wPos int
 	rPos int
-	mu   sync.Mutex
+	mu sync.Mutex
+	log *zap.Logger
+	encoder *opus.Encoder
+	decoder *opus.Decoder
+}
+func newAB(vol float32, btr, smpR, ch int, log *zap.Logger) (*audioBuffer, error) {
+	enc, err := opus.NewEncoder(smpR, ch, opus.AppVoIP)
+	if err != nil {
+		log.Error("Create OPUS encoder error: ", zap.Error(err))
+		return nil, err
+	}
+	enc.SetBitrate(btr)
+	
+	dec, err := opus.NewDecoder(smpR, ch)
+	if err != nil {
+		log.Error("Create OPUS decoder error: ", zap.Error(err))
+		return nil, err
+	}
+
+	return &audioBuffer{
+		vol: vol,
+		log: log,
+		encoder: enc,
+		decoder: dec,
+	}, nil
 }
 
 func (b *audioBuffer) write(samples []float32) {
@@ -38,6 +62,14 @@ func (b *audioBuffer) setPCM(pcm []int16) {
 	defer b.mu.Unlock()
 	b.pcm = pcm
 }
+func (b *audioBuffer) resetPCM(newSize int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.pcm = make([]int16, newSize)
+	b.wPos = 0
+	b.rPos = 0
+}
 
 func (b *audioBuffer) read(out []float32) {
 	b.mu.Lock()
@@ -56,7 +88,7 @@ func (b *audioBuffer) read(out []float32) {
 func (b *audioBuffer) recorded() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.wPos < len(b.pcm)
+	return b.wPos >= len(b.pcm)
 }
 
 func (b *audioBuffer) played() bool {
@@ -65,16 +97,15 @@ func (b *audioBuffer) played() bool {
 	return b.rPos >= len(b.pcm)
 }
 
-func (b *audioBuffer) encodeOPUS(sampleRate, channels, bitrate int, pcm []int16, log *zap.Logger) ([]byte, error) {
+func (b *audioBuffer) resetPlay() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.rPos = 0
+}
 
-	encoder, err := opus.NewEncoder(sampleRate, channels, opus.AppVoIP)
-	if err != nil {
-		log.Error("Create OPUS encoder error: ", zap.Error(err))
-		return nil, err
-	}
-	encoder.SetBitrate(bitrate)
+func (b *audioBuffer) encodeOPUS(sampleRate, channels int, pcm []int16) ([]byte, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	frameSize := sampleRate / 50
 	frameBytes := make([]byte, 4000)
@@ -83,9 +114,9 @@ func (b *audioBuffer) encodeOPUS(sampleRate, channels, bitrate int, pcm []int16,
 	for i := 0; i+frameSize*channels <= len(pcm); i += frameSize * channels {
 		frame := pcm[i : i+frameSize*channels]
 
-		n, err := encoder.Encode(frame, frameBytes)
+		n, err := b.encoder.Encode(frame, frameBytes)
 		if err != nil {
-			log.Error("Encode PCM to OPUS error: ", zap.Error(err))
+			b.log.Error("Encode PCM to OPUS error: ", zap.Error(err))
 			return nil, err
 		}
 
@@ -96,15 +127,9 @@ func (b *audioBuffer) encodeOPUS(sampleRate, channels, bitrate int, pcm []int16,
 	return out, nil
 }
 
-func (b *audioBuffer) decodeOPUS(bufferSize, sampleRate, channels int, opusBuffer []byte, log *zap.Logger) ([]int16, error) {
+func (b *audioBuffer) decodeOPUS(bufferSize, sampleRate, channels int, opusBuffer []byte) ([]int16, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
-	decoder, err := opus.NewDecoder(sampleRate, channels)
-	if err != nil {
-		log.Error("Create OPUS decoder error: ", zap.Error(err))
-		return nil, err
-	}
 
 	pcm := make([]int16, 0, len(opusBuffer)*4)
 	pos := 0
@@ -113,7 +138,7 @@ func (b *audioBuffer) decodeOPUS(bufferSize, sampleRate, channels int, opusBuffe
 		n := int(opusBuffer[pos])<<8 | int(opusBuffer[pos+1])
 		pos += 2
 		if pos+n > len(opusBuffer) {
-			log.Warn("Incomplete OPUS packet")
+			b.log.Warn("Incomplete OPUS packet")
 			break
 		}
 
@@ -121,9 +146,9 @@ func (b *audioBuffer) decodeOPUS(bufferSize, sampleRate, channels int, opusBuffe
 		pos += n
 
 		samples := make([]int16, sampleRate/50*channels)
-		decoded, err := decoder.Decode(frame, samples)
+		decoded, err := b.decoder.Decode(frame, samples)
 		if err != nil {
-			log.Error("Decode OPUS to PCM error: ", zap.Error(err))
+			b.log.Error("Decode OPUS to PCM error: ", zap.Error(err))
 			return nil, err
 		}
 
@@ -132,4 +157,3 @@ func (b *audioBuffer) decodeOPUS(bufferSize, sampleRate, channels int, opusBuffe
 
 	return pcm, nil
 }
-
