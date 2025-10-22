@@ -2,9 +2,11 @@ package audio
 
 import (
 	"time"
-	
+
 	"go.uber.org/zap"
 	"github.com/gordonklaus/portaudio"
+
+	"Viz/internal/compressor"
 )
 
 type AudioStream struct {
@@ -16,6 +18,7 @@ type AudioStream struct {
 	stopChan chan bool
 	audioChan chan []byte
 	ab *audioBuffer
+	cmpr *compressor.Compressor
 }
 
 func NewAS(log *zap.Logger) *AudioStream {
@@ -24,10 +27,16 @@ func NewAS(log *zap.Logger) *AudioStream {
 		log.Error("Create audio buffer error: ", zap.Error(err))
 		return nil
 	}
+	cmpr, err := compressor.NewCmpr(log)
+	if err != nil {
+		log.Error("Create compressor error: ", zap.Error(err))
+		return nil
+	}
 
 	return &AudioStream{
 		ab: ab,
 		log: log,
+		cmpr: cmpr,
 		channels: 1,
 		bitrate: 32000,
 		bufferSize: 2048,
@@ -100,7 +109,7 @@ func (as *AudioStream) recordStream() {
 			as.log.Info("I going to full channel ", zap.Int("opusChunk: ", len(opusChunk)))
 
 			select {
-			case as.audioChan <- opusChunk:
+			case as.audioChan <- as.cmpr.CompressVoice(opusChunk):
 			case <- time.After(100 * time.Millisecond):
 				as.log.Warn("Channel full, dropping packet")
 			}
@@ -147,9 +156,15 @@ func (as *AudioStream) playStream() {
 		case <- as.stopChan:
 			as.log.Info("Stopping playback stream")
 			return
-		case opusChunk, ok := <- as.audioChan:
+		case zstdChunk, ok := <- as.audioChan:
 			if !ok {
 				return
+			}
+
+			opusChunk, err := as.cmpr.DecompressAudio(zstdChunk)
+			if err != nil {
+				as.log.Error("Decompress audio error: ", zap.Error(err))
+				continue
 			}
 
 			as.log.Info("Decoding new chunk: ", zap.Int("size", len(opusChunk)))
