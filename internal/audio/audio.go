@@ -22,12 +22,8 @@ type AudioStream struct {
 }
 
 func NewAS(log *zap.Logger) *AudioStream {
-	ab, err := newAB(1.0, 32000, 48000, 1, log)
-	if err != nil {
-		log.Error("Create audio buffer error: ", zap.Error(err))
-		return nil
-	}
-	cmpr, err := compressor.NewCmpr(log)
+	ab := newAB(1.0, log)
+	cmpr, err := compressor.NewCmpr(16000, 48000, 1, log)
 	if err != nil {
 		log.Error("Create compressor error: ", zap.Error(err))
 		return nil
@@ -54,12 +50,13 @@ func (as *AudioStream) Start() {
 func (as *AudioStream) recordStream() {
 	dev, err := portaudio.DefaultInputDevice()
 	if err != nil {
+		as.log.Error("Couldn't get default output device")
 		return
 	}
 
-	samplesPer500ms := int(as.sampleRate * 0.5 * float64(as.channels))
+	samplesPerMs := int(as.sampleRate * 0.3 * float64(as.channels))
 
-	as.ab.resetPCM(samplesPer500ms)
+	as.ab.resetPCM(samplesPerMs)
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
 			Input: portaudio.StreamDeviceParameters{
@@ -95,26 +92,21 @@ func (as *AudioStream) recordStream() {
 			time.Sleep(450 * time.Millisecond)
 			for !as.ab.recorded() {
 				time.Sleep(10 * time.Millisecond)
-				as.log.Info("DATA: \n", zap.Int("pcm", len(as.ab.pcm)), zap.Int("wPos", as.ab.wPos))
 			}
 
-			as.log.Info("I can record")
-
-			opusChunk, err := as.ab.encodeOPUS(int(as.sampleRate), as.channels, as.ab.data())
+			zstdChunk, err := as.cmpr.CompressVoice(int(as.sampleRate), as.channels, as.ab.data())
 			if err != nil {
-				as.log.Error("Encode PCM to OPUS failedL ", zap.Error(err))
+				as.log.Error("Compress voice error: ", zap.Error(err))
 				continue
 			}
-			
-			as.log.Info("I going to full channel ", zap.Int("opusChunk: ", len(opusChunk)))
 
 			select {
-			case as.audioChan <- as.cmpr.CompressVoice(opusChunk):
+			case as.audioChan <- zstdChunk:
 			case <- time.After(100 * time.Millisecond):
 				as.log.Warn("Channel full, dropping packet")
 			}
 
-			as.ab.resetPCM(samplesPer500ms)
+			as.ab.resetPCM(samplesPerMs)
 		}
 	}
 }
@@ -122,6 +114,7 @@ func (as *AudioStream) recordStream() {
 func (as *AudioStream) playStream() {
 	dev, err := portaudio.DefaultOutputDevice()
 	if err != nil {
+		as.log.Error("Couldn't get default output device")
 		return
 	}
 
@@ -158,27 +151,19 @@ func (as *AudioStream) playStream() {
 			return
 		case zstdChunk, ok := <- as.audioChan:
 			if !ok {
+				as.log.Info("Channel is closed")
 				return
 			}
 
-			opusChunk, err := as.cmpr.DecompressAudio(zstdChunk)
+			pcm, err := as.cmpr.DecompressAudio(as.bufferSize, int(as.sampleRate), as.channels, zstdChunk)
 			if err != nil {
 				as.log.Error("Decompress audio error: ", zap.Error(err))
 				continue
 			}
 
-			as.log.Info("Decoding new chunk: ", zap.Int("size", len(opusChunk)))
-
-			pcm, err := as.ab.decodeOPUS(as.bufferSize, int(as.sampleRate), as.channels, opusChunk)
-			if err != nil {
-				as.log.Error("Decode OPUS chunk failed: ", zap.Error(err))
-				continue
-			}
 			as.ab.setPCM(pcm)
 			as.ab.resetPlay()
 
-			as.log.Info("I going playback with ", zap.Int("pcm len:", len(as.ab.pcm)))
-			
 			for !as.ab.played() {
 				time.Sleep(10 * time.Millisecond)
 			}
