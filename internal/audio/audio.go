@@ -11,34 +11,48 @@ import (
 
 type AudioStream struct {
 	log *zap.Logger
+	dur time.Duration
 	bitrate int
 	channels int
 	bufferSize int
 	sampleRate float64
 	stopChan chan bool
 	audioChan chan []byte
-	ab *audioBuffer
-	cmpr *compressor.Compressor
+	playAb *audioBuffer
+	recordAb *audioBuffer
+	playCmpr *compressor.Compressor
+	recordCmpr *compressor.Compressor
 }
 
 func NewAS(log *zap.Logger) *AudioStream {
-	ab := newAB(1.0, log)
-	cmpr, err := compressor.NewCmpr(16000, 48000, 1, log)
+	playAb := newAB(1.0, log)
+	recordAb := newAB(1.0, log)
+	
+	playCmpr, err := compressor.NewCmpr(32000, 48000, 1, log)
+	if err != nil {
+		log.Error("Create compressor error: ", zap.Error(err))
+		return nil
+	}
+
+	recordCmpr, err := compressor.NewCmpr(32000, 48000, 1, log)
 	if err != nil {
 		log.Error("Create compressor error: ", zap.Error(err))
 		return nil
 	}
 
 	return &AudioStream{
-		ab: ab,
 		log: log,
-		cmpr: cmpr,
+		dur: 300,
 		channels: 1,
 		bitrate: 32000,
 		bufferSize: 2048,
 		sampleRate: 48000.0,
 		stopChan: make(chan bool),
 		audioChan: make(chan []byte, 10),
+		playAb: playAb,
+		recordAb: recordAb,
+		playCmpr: playCmpr,
+		recordCmpr: recordCmpr,
 	}
 }
 
@@ -54,9 +68,9 @@ func (as *AudioStream) recordStream() {
 		return
 	}
 
-	samplesPerMs := int(as.sampleRate * 0.3 * float64(as.channels))
+	samplesPerMs := int(as.sampleRate * float64(as.dur)/1000 * float64(as.channels))
 
-	as.ab.resetPCM(samplesPerMs)
+	as.recordAb.resetPCM(samplesPerMs)
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
 			Input: portaudio.StreamDeviceParameters{
@@ -70,7 +84,7 @@ func (as *AudioStream) recordStream() {
 			FramesPerBuffer: as.bufferSize,
 		},
 		func (in []float32) {
-			as.ab.write(in)
+			as.recordAb.write(in)
 		},
 	)
 	if err != nil {
@@ -89,16 +103,25 @@ func (as *AudioStream) recordStream() {
 			as.log.Info("Stopping recording")
 			return
 		default:
-			time.Sleep(450 * time.Millisecond)
-			for !as.ab.recorded() {
-				time.Sleep(10 * time.Millisecond)
+			startTime := time.Now()
+			for !as.recordAb.recorded() {
+				if time.Since(startTime) > as.dur * time.Millisecond {
+					as.log.Warn("Record timeout")
+					break
+				}
+				as.log.Info("Waiting for buffer")
+				time.Sleep(1 * time.Millisecond)
 			}
 
-			zstdChunk, err := as.cmpr.CompressVoice(int(as.sampleRate), as.channels, as.ab.data())
+			as.log.Info("Going to compress")
+
+			zstdChunk, err := as.recordCmpr.CompressVoice(int(as.sampleRate), as.channels, as.recordAb.data())
 			if err != nil {
 				as.log.Error("Compress voice error: ", zap.Error(err))
 				continue
 			}
+
+			as.log.Info("Before compress", zap.Int("chunk: ", len(zstdChunk)))
 
 			select {
 			case as.audioChan <- zstdChunk:
@@ -106,7 +129,7 @@ func (as *AudioStream) recordStream() {
 				as.log.Warn("Channel full, dropping packet")
 			}
 
-			as.ab.resetPCM(samplesPerMs)
+			as.recordAb.resetPCM(samplesPerMs)
 		}
 	}
 }
@@ -131,7 +154,7 @@ func (as *AudioStream) playStream() {
 			FramesPerBuffer: as.bufferSize,
 		},
 		func (in, out []float32) {
-			as.ab.read(out)
+			as.playAb.read(out)
 		},
 	)
 	if err != nil {
@@ -155,20 +178,28 @@ func (as *AudioStream) playStream() {
 				return
 			}
 
-			pcm, err := as.cmpr.DecompressAudio(as.bufferSize, int(as.sampleRate), as.channels, zstdChunk)
+			as.log.Info("Going to decompress")
+
+			pcm, err := as.playCmpr.DecompressAudio(as.bufferSize, int(as.sampleRate), as.channels, zstdChunk)
 			if err != nil {
 				as.log.Error("Decompress audio error: ", zap.Error(err))
 				continue
 			}
 
-			as.ab.setPCM(pcm)
-			as.ab.resetPlay()
+			as.log.Info("Before decompress", zap.Int("pcm: ", len(pcm)))
 
-			for !as.ab.played() {
-				time.Sleep(10 * time.Millisecond)
+			as.playAb.setPCM(pcm)
+			as.playAb.resetPlay()
+
+			startTime := time.Now()
+			for !as.playAb.played() {
+				if time.Since(startTime) > as.dur*time.Millisecond {
+					as.log.Warn("Play timeout")
+					break
+				}
+				as.log.Info("Playback")
+				time.Sleep(1 * time.Millisecond)
 			}
-
-			time.Sleep(50 * time.Millisecond)
 		}
 	}
 }

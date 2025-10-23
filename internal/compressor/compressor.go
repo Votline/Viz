@@ -1,8 +1,6 @@
 package compressor
 
 import (
-	"sync"
-	
 	"go.uber.org/zap"
 	"github.com/jj11hh/opus"
 	"github.com/klauspost/compress/zstd"
@@ -10,7 +8,6 @@ import (
 
 type Compressor struct {
 	log *zap.Logger
-	mu sync.Mutex
 	opusEn *opus.Encoder
 	opusDec *opus.Decoder
 	zstdEn *zstd.Encoder
@@ -52,9 +49,6 @@ func NewCmpr(btr, smpR, ch int, log *zap.Logger) (*Compressor, error) {
 }
 
 func (c *Compressor) CompressVoice(smpR, ch int, pcm []int16) ([]byte, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	voice, err := c.encodeOpus(smpR, ch, pcm)
 	if err != nil {
 		c.log.Error("Encode PCM to OPUS failed: ", zap.Error(err))
@@ -65,9 +59,6 @@ func (c *Compressor) CompressVoice(smpR, ch int, pcm []int16) ([]byte, error) {
 }
 
 func (c *Compressor) DecompressAudio(bufSize, smpR, ch int, zstdAudio []byte) ([]int16, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
 	audio, err := c.zstdDec.DecodeAll(zstdAudio, nil)
 	if err != nil {
 		c.log.Error("Decode audio error: ", zap.Error(err))
