@@ -12,56 +12,66 @@ import (
 type AudioStream struct {
 	log *zap.Logger
 	dur time.Duration
+	
 	bitrate int
 	channels int
 	bufferSize int
 	sampleRate float64
-	stopChan chan bool
+	
+	VoiceChan chan []byte
 	audioChan chan []byte
+
+	AudioQueue *audioQueue
 	playAb *audioBuffer
 	recordAb *audioBuffer
 	playCmpr *compressor.Compressor
 	recordCmpr *compressor.Compressor
 }
 
-func NewAS(log *zap.Logger) *AudioStream {
+func NewAS(log *zap.Logger) (*AudioStream, error) {
 	playAb := newAB(1.0, log)
 	recordAb := newAB(1.0, log)
 	
 	playCmpr, err := compressor.NewCmpr(32000, 48000, 1, log)
 	if err != nil {
 		log.Error("Create compressor error: ", zap.Error(err))
-		return nil
+		return nil, err
 	}
 
 	recordCmpr, err := compressor.NewCmpr(32000, 48000, 1, log)
 	if err != nil {
 		log.Error("Create compressor error: ", zap.Error(err))
-		return nil
+		return nil, err
 	}
+	queue := newAQ()
 
 	return &AudioStream{
 		log: log,
 		dur: 300,
+		
 		channels: 1,
 		bitrate: 32000,
 		bufferSize: 2048,
 		sampleRate: 48000.0,
-		stopChan: make(chan bool),
+		
+		VoiceChan: make(chan []byte, 10),
 		audioChan: make(chan []byte, 10),
+		
+		AudioQueue: queue,
 		playAb: playAb,
 		recordAb: recordAb,
 		playCmpr: playCmpr,
 		recordCmpr: recordCmpr,
-	}
+	}, err
 }
 
-func (as *AudioStream) Start() {
-	go as.recordStream()
-	go as.playStream()
-}
+func (as *AudioStream) RecordStream() {
+	defer func(){
+		if r := recover(); r != nil {
+			as.log.Error("PANIC in record audio", zap.Any("recover: ", r))
+		}
+	}()
 
-func (as *AudioStream) recordStream() {
 	dev, err := portaudio.DefaultInputDevice()
 	if err != nil {
 		as.log.Error("Couldn't get default output device")
@@ -98,49 +108,49 @@ func (as *AudioStream) recordStream() {
 	}
 
 	for {
-		select {
-		case <- as.stopChan:
-			as.log.Info("Stopping recording")
-			return
-		default:
-			startTime := time.Now()
-			for !as.recordAb.recorded() {
-				if time.Since(startTime) > as.dur * time.Millisecond {
-					as.log.Warn("Record timeout")
-					break
-				}
-				as.log.Info("Waiting for buffer")
-				time.Sleep(1 * time.Millisecond)
+		startTime := time.Now()
+		for !as.recordAb.recorded() {
+			if time.Since(startTime) > as.dur * time.Millisecond {
+				as.log.Warn("Record timeout")
+				break
 			}
-
-			as.log.Info("Going to compress")
-
-			zstdChunk, err := as.recordCmpr.CompressVoice(int(as.sampleRate), as.channels, as.recordAb.data())
-			if err != nil {
-				as.log.Error("Compress voice error: ", zap.Error(err))
-				continue
-			}
-
-			as.log.Info("Before compress", zap.Int("chunk: ", len(zstdChunk)))
-
-			select {
-			case as.audioChan <- zstdChunk:
-			case <- time.After(100 * time.Millisecond):
-				as.log.Warn("Channel full, dropping packet")
-			}
-
-			as.recordAb.resetPCM(samplesPerMs)
+			as.log.Info("Waiting for buffer")
+			time.Sleep(1 * time.Millisecond)
 		}
+
+		as.log.Info("Going to compress")
+
+		zstdChunk, err := as.recordCmpr.CompressVoice(int(as.sampleRate), as.channels, as.recordAb.data())
+		if err != nil {
+			as.log.Error("Compress voice error: ", zap.Error(err))
+			continue
+		}
+
+		as.log.Info("Before compress", zap.Int("chunk: ", len(zstdChunk)))
+
+		select {
+		case as.VoiceChan <- zstdChunk:
+		case <- time.After(100 * time.Millisecond):
+			as.log.Warn("Channel full, dropping packet")
+		}
+
+		as.recordAb.resetPCM(samplesPerMs)
 	}
 }
 
-func (as *AudioStream) playStream() {
+func (as *AudioStream) PlayStream() {
+	defer func(){
+		if r := recover(); r != nil {
+			as.log.Error("PANIC in audio playback", zap.Any("recvoer: ", r))
+		}
+	}()
+
 	dev, err := portaudio.DefaultOutputDevice()
 	if err != nil {
 		as.log.Error("Couldn't get default output device")
 		return
 	}
-
+	
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
 			Input: portaudio.StreamDeviceParameters{
@@ -168,38 +178,33 @@ func (as *AudioStream) playStream() {
 	}
 
 	for {
-		select {
-		case <- as.stopChan:
-			as.log.Info("Stopping playback stream")
-			return
-		case zstdChunk, ok := <- as.audioChan:
-			if !ok {
-				as.log.Info("Channel is closed")
-				return
+		zstdChunk := as.AudioQueue.pop()
+		if zstdChunk == nil {
+			time.Sleep(1*time.Millisecond)
+			continue
+		}
+
+		as.log.Info("Going to decompress")
+
+		pcm, err := as.playCmpr.DecompressAudio(as.bufferSize, int(as.sampleRate), as.channels, zstdChunk)
+		if err != nil {
+			as.log.Error("Decompress audio error: ", zap.Error(err))
+			continue
+		}
+
+		as.log.Info("Before decompress", zap.Int("pcm: ", len(pcm)))
+
+		as.playAb.setPCM(pcm)
+		as.playAb.resetPlay()
+
+		startTime := time.Now()
+		for !as.playAb.played() {
+			if time.Since(startTime) > as.dur*time.Millisecond {
+				as.log.Warn("Play timeout")
+				break
 			}
-
-			as.log.Info("Going to decompress")
-
-			pcm, err := as.playCmpr.DecompressAudio(as.bufferSize, int(as.sampleRate), as.channels, zstdChunk)
-			if err != nil {
-				as.log.Error("Decompress audio error: ", zap.Error(err))
-				continue
-			}
-
-			as.log.Info("Before decompress", zap.Int("pcm: ", len(pcm)))
-
-			as.playAb.setPCM(pcm)
-			as.playAb.resetPlay()
-
-			startTime := time.Now()
-			for !as.playAb.played() {
-				if time.Since(startTime) > as.dur*time.Millisecond {
-					as.log.Warn("Play timeout")
-					break
-				}
-				as.log.Info("Playback")
-				time.Sleep(1 * time.Millisecond)
-			}
+			as.log.Info("Playback")
+			time.Sleep(1 * time.Millisecond)
 		}
 	}
 }
