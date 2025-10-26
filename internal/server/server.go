@@ -1,13 +1,16 @@
 package server
 
 import (
+	"sync"
 	"time"
+	"context"
 	"net/http"
 
 	"go.uber.org/zap"
 	"github.com/gorilla/websocket"
 
 	"Viz/internal/audio"
+	"Viz/internal/encryptor"
 )
 
 func Setup(log *zap.Logger) (*http.Server, error) {
@@ -57,51 +60,69 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 		defer conn.Close()
 		log.Info("WS connection established")
 
+		enc, err := encryptor.Setup(log, conn)
+		if err != nil {
+			log.Fatal("Failed to create encryptor: ", zap.Error(err))
+		}
+
 		go audioStream.RecordStream()
 		go audioStream.PlayStream()
-		breakChan := make(chan bool, 2)
+		
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-		go func(breakChan chan bool){
+		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go func(){
+			defer wg.Done()
 			for {
 				select {
 				case voiceChunk := <-audioStream.VoiceChan:
-					if err := conn.WriteMessage(websocket.BinaryMessage, voiceChunk); err != nil {
+					encChunk, err := enc.Encrypt(voiceChunk)
+					if err != nil {
+						log.Error("Encrypt voice chunk error: ", zap.Error(err))
+						continue
+					}
+					if err := conn.WriteMessage(websocket.BinaryMessage, encChunk); err != nil {
 						log.Error("WS server write failed: ", zap.Error(err))
-						breakChan <-true
+						cancel()
 						return
 					}
-				case <- breakChan:
+				case <-ctx.Done():
 					return
 				default:
 					time.Sleep(1*time.Millisecond)
 				}
 			}
-		}(breakChan)
-	
-		go func(breakChan chan bool){
+		}()
+
+		wg.Add(1)
+		go func(){
+			defer wg.Done()
 			for {
-				if <-breakChan {
+				select {
+				case <-ctx.Done():
 					return
+				default:
+					_, msg, err := conn.ReadMessage()
+					if err != nil {
+						log.Error("WS server read failed: ", zap.Error(err))
+						cancel()
+						return
+					}
+					decMsg, err := enc.Decrypt(msg)
+					if err != nil {
+						log.Error("Decrypt message error: ", zap.Error(err))
+						continue
+					}
+					audioStream.AudioQueue.Push(decMsg)
 				}
-
-				_, msg, err := conn.ReadMessage()
-				if err != nil {
-					log.Error("WS server read failed: ", zap.Error(err))
-					breakChan <- true
-					return
-				}
-				audioStream.AudioQueue.Push(msg)
 			}
-		}(breakChan)
+		}()
 
-		for {
-			select {
-			case <-breakChan:
-				break
-			default:
-				time.Sleep(1*time.Millisecond)
-			}
-		}
+		wg.Wait()
+		log.Info("WS connection closed")
 	})
 
 	return mux, nil

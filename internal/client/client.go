@@ -4,11 +4,13 @@ import (
 	"sync"
 	"time"
 	"net/url"
+	"context"
 
-	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
+	"github.com/gorilla/websocket"
 
 	"Viz/internal/audio"
+	"Viz/internal/encryptor"
 )
 
 type Client struct {
@@ -59,24 +61,36 @@ func (c *Client) connect(serverURL string) error {
 func (c *Client) StartCall(serverURL string) {
 	c.connect(serverURL)
 
+	enc, err := encryptor.Setup(c.log, c.conn)
+	if err != nil {
+		c.log.Error("Failed to create encryptor: ", zap.Error(err))
+	}
+
+
+	go c.audioStream.RecordStream()
+	go c.audioStream.PlayStream()
+	
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	var wg sync.WaitGroup
-	wg.Add(2)
 
+	wg.Add(1)
 	go func(){
 		defer wg.Done()
-		c.audioStream.RecordStream()
-	}()
-	go func(){
-		defer wg.Done()
-		c.audioStream.PlayStream()
-	}()
-
-	go func(){
 		for {
 			select{
+			case <-ctx.Done():
+				return
 			case voiceChunk := <-c.audioStream.VoiceChan:
-				if err := c.conn.WriteMessage(websocket.BinaryMessage, voiceChunk); err != nil {
+				encChunk, err := enc.Encrypt(voiceChunk)
+				if err != nil {
+					c.log.Error("Encrypt voice chunk error: ", zap.Error(err))
+					continue
+				}
+				if err := c.conn.WriteMessage(websocket.BinaryMessage, encChunk); err != nil {
 					c.log.Error("WS client write error: ", zap.Error(err))
+					cancel()
 					return
 				}
 			default:
@@ -84,15 +98,27 @@ func (c *Client) StartCall(serverURL string) {
 			}
 		}
 	}()
-	
+
+	wg.Add(1)
 	go func(){
+		defer wg.Done()
 		for {
-			_, msg, err := c.conn.ReadMessage()
-			if err != nil {
-				c.log.Error("WS client read error: ", zap.Error(err))
+			select{
+			case <-ctx.Done():
 				return
+			default:
+				_, msg, err := c.conn.ReadMessage()
+				if err != nil {
+					c.log.Error("WS client read error: ", zap.Error(err))
+					cancel()
+					return
+				}
+				decMsg, err := enc.Decrypt(msg)
+				if err != nil {
+					c.log.Error("Decrypt msg error: ", zap.Error(err))
+				}
+				c.audioStream.AudioQueue.Push(decMsg)
 			}
-			c.audioStream.AudioQueue.Push(msg)
 		}
 	}()
 
