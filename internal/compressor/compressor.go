@@ -1,6 +1,8 @@
 package compressor
 
 import (
+	"runtime"
+
 	"go.uber.org/zap"
 	"github.com/jj11hh/opus"
 	"github.com/klauspost/compress/zstd"
@@ -91,6 +93,8 @@ func (c *Compressor) encodeOpus(sampleRate, channels int, pcm []int16) ([]byte, 
 		out = append(out, byte(n>>8), byte(n&0xFF))
 		out = append(out, frameBytes[:n]...)
 	}
+
+	runtime.GC()
 
 	return out, nil
 }

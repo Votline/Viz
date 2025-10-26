@@ -83,11 +83,7 @@ func (c *Client) StartCall(serverURL string) {
 			case <-ctx.Done():
 				return
 			case voiceChunk := <-c.audioStream.VoiceChan:
-				encChunk, err := enc.Encrypt(voiceChunk)
-				if err != nil {
-					c.log.Error("Encrypt voice chunk error: ", zap.Error(err))
-					continue
-				}
+				encChunk := enc.Encrypt(voiceChunk)
 				if err := c.conn.WriteMessage(websocket.BinaryMessage, encChunk); err != nil {
 					c.log.Error("WS client write error: ", zap.Error(err))
 					cancel()

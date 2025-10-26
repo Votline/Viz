@@ -112,7 +112,7 @@ func (as *AudioStream) RecordStream() {
 		for !as.recordAb.recorded() {
 			if time.Since(startTime) > as.dur * time.Millisecond {
 				as.log.Warn("Record timeout")
-				break
+				continue
 			}
 			as.log.Info("Waiting for buffer")
 			time.Sleep(1 * time.Millisecond)

@@ -79,11 +79,7 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 			for {
 				select {
 				case voiceChunk := <-audioStream.VoiceChan:
-					encChunk, err := enc.Encrypt(voiceChunk)
-					if err != nil {
-						log.Error("Encrypt voice chunk error: ", zap.Error(err))
-						continue
-					}
+					encChunk := enc.Encrypt(voiceChunk)
 					if err := conn.WriteMessage(websocket.BinaryMessage, encChunk); err != nil {
 						log.Error("WS server write failed: ", zap.Error(err))
 						cancel()
