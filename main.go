@@ -1,17 +1,18 @@
 package main
 
 import (
-	"fmt"
-
-	"sync"
 	"context"
+	"flag"
+	"fmt"
+	"sync"
 
-	"go.uber.org/zap"
-	"github.com/jj11hh/opus"
 	"github.com/gordonklaus/portaudio"
+	"github.com/jj11hh/opus"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
-	"Viz/internal/server"
 	"Viz/internal/client"
+	"Viz/internal/server"
 )
 
 var (
@@ -21,6 +22,24 @@ var (
 
 func setupLog() *zap.Logger {
 	cfg := zap.NewDevelopmentConfig()
+	
+	var logLevel string
+	flag.StringVar(&logLevel, "level", "info", "set log level\ninfo/warn/fatal/100 or ignore")
+	flag.Parse()
+
+	switch logLevel {
+	case "info":
+		cfg.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
+	case "warn":
+		cfg.Level = zap.NewAtomicLevelAt(zapcore.WarnLevel)
+	case "fatal":
+		cfg.Level = zap.NewAtomicLevelAt(zapcore.ErrorLevel)
+	case "100", "ignore":
+		cfg.Level = zap.NewAtomicLevelAt(100)
+	default:
+		cfg.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
+	}
+
 	cfg.EncoderConfig.TimeKey = ""
 	log, _ := cfg.Build()
 	return log
