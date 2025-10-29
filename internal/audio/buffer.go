@@ -13,6 +13,7 @@ type audioBuffer struct {
 	rPos int
 	mu sync.Mutex
 	log *zap.Logger
+	recording bool
 }
 func newAB(vol float32, log *zap.Logger) *audioBuffer {
 	return &audioBuffer{
@@ -25,8 +26,8 @@ func (b *audioBuffer) write(samples []float32) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.pcm == nil {
-		b.log.Warn("Buffer is nil")
+	if !b.recording || b.pcm == nil {
+		b.log.Warn("Buffer is nil or already recording")
 		return
 	}
 
@@ -35,6 +36,7 @@ func (b *audioBuffer) write(samples []float32) {
 			b.log.Warn("Buffer overflow",
 				zap.Int("wPos: ", b.wPos),
 				zap.Int("bufferSize: ", len(b.pcm)))
+			return
 		}
 
 		if sample < -1 {sample = -1
@@ -50,7 +52,7 @@ func (b *audioBuffer) data() []int16 {
 	defer b.mu.Unlock()
 
 	if b.wPos == 0 {
-		return []int16{}
+		return nil
 	}
 
 	return b.pcm[:b.wPos]
@@ -65,6 +67,7 @@ func (b *audioBuffer) resetPCM(newSize int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	b.recording = true
 	b.pcm = make([]int16, newSize)
 	b.wPos = 0
 	b.rPos = 0
@@ -73,6 +76,11 @@ func (b *audioBuffer) resetPCM(newSize int) {
 func (b *audioBuffer) read(out []float32) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	b.log.Debug("Reading from buffer",
+		zap.Int("outSize: ", len(out)),
+		zap.Int("rPos: ", b.rPos),
+		zap.Int("pcmLen: ", len(b.pcm)))
 
 	for i := range out {
 		if b.rPos < len(b.pcm) {
@@ -93,11 +101,34 @@ func (b *audioBuffer) recorded() bool {
 func (b *audioBuffer) played() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.rPos >= len(b.pcm)
+
+	played :=  b.rPos >= len(b.pcm)
+	if played {
+		b.log.Debug("Buffer fully played",
+			zap.Int("rPos: ", b.rPos),
+			zap.Int("pcmLen: ", len(b.pcm)))
+	}
+	return played
 }
 
 func (b *audioBuffer) resetPlay() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.rPos = 0
+}
+
+func (b *audioBuffer) stopRecording() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.recording = false
+}
+
+func (b *audioBuffer) cleanup() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.pcm = nil
+	b.wPos = 0
+	b.rPos = 0
+	b.recording = false
 }

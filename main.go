@@ -22,7 +22,13 @@ var (
 
 func setupLog() *zap.Logger {
 	cfg := zap.NewDevelopmentConfig()
-	
+	cfg.OutputPaths = []string{"app.log", "stdout"}
+	cfg.ErrorOutputPaths = []string{"errors.log"}
+	cfg.EncoderConfig.TimeKey = "time"
+	cfg.EncoderConfig.LevelKey = "level"
+	cfg.EncoderConfig.MessageKey = "msg"
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+
 	var logLevel string
 	flag.StringVar(&logLevel, "level", "info", "set log level\ninfo/warn/fatal/100 or ignore")
 	flag.Parse()
@@ -32,12 +38,14 @@ func setupLog() *zap.Logger {
 		cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
 	case "warn":
 		cfg.Level = zap.NewAtomicLevelAt(zapcore.WarnLevel)
-	case "fatal":
+	case "error":
 		cfg.Level = zap.NewAtomicLevelAt(zapcore.ErrorLevel)
+	case "fatal":
+		cfg.Level = zap.NewAtomicLevelAt(zapcore.FatalLevel)
 	case "100", "ignore":
 		cfg.Level = zap.NewAtomicLevelAt(100)
 	default:
-		cfg.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
+		cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
 	}
 
 	cfg.EncoderConfig.TimeKey = ""
