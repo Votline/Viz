@@ -25,17 +25,34 @@ func (b *audioBuffer) write(samples []float32) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	if b.pcm == nil {
+		b.log.Warn("Buffer is nil")
+		return
+	}
+
 	for _, sample := range samples {
-		if b.wPos < len(b.pcm) {
-			b.pcm[b.wPos] = int16(sample * 32767)
-			b.wPos++
+		if b.wPos >= len(b.pcm) {
+			b.log.Warn("Buffer overflow",
+				zap.Int("wPos: ", b.wPos),
+				zap.Int("bufferSize: ", len(b.pcm)))
 		}
+
+		if sample < -1 {sample = -1
+		} else if sample > 1 {sample = 1}
+
+		b.pcm[b.wPos] = int16(sample * 32767)
+		b.wPos++
 	}
 }
 
 func (b *audioBuffer) data() []int16 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	if b.wPos == 0 {
+		return []int16{}
+	}
+
 	return b.pcm[:b.wPos]
 }
 

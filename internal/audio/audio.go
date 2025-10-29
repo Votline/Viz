@@ -80,6 +80,11 @@ func (as *AudioStream) RecordStream() {
 
 	samplesPerMs := int(as.sampleRate * float64(as.dur)/1000 * float64(as.channels))
 
+	as.log.Debug("Starting recording",
+		zap.Int("durationMs: ", int(as.dur)),
+		zap.Int("samples: ", samplesPerMs),
+		zap.Float64("sampleRate: ", as.sampleRate))
+
 	as.recordAb.resetPCM(samplesPerMs)
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
@@ -111,22 +116,34 @@ func (as *AudioStream) RecordStream() {
 		startTime := time.Now()
 		for !as.recordAb.recorded() {
 			if time.Since(startTime) > as.dur * time.Millisecond {
-				as.log.Warn("Record timeout")
+				as.log.Warn("Record timeout - resetting buffer")
+				as.recordAb.resetPCM(samplesPerMs)
+				startTime = time.Now()
 				continue
 			}
 			as.log.Info("Waiting for buffer")
-			time.Sleep(1 * time.Millisecond)
+			time.Sleep(5 * time.Millisecond)
 		}
 
-		as.log.Info("Going to compress")
+		as.log.Debug("Buffer filled, compressing...",
+			zap.Int("samples: ", len(as.recordAb.data())))
 
-		zstdChunk, err := as.recordCmpr.CompressVoice(int(as.sampleRate), as.channels, as.recordAb.data())
+		pcmData := as.recordAb.data()
+		if len(pcmData) == 0 {
+			as.log.Warn("Empty PCM data")
+			as.recordAb.resetPCM(samplesPerMs)
+			continue
+		}
+
+		zstdChunk, err := as.recordCmpr.CompressVoice(int(as.sampleRate), as.channels, pcmData)
 		if err != nil {
 			as.log.Error("Compress voice error: ", zap.Error(err))
 			continue
 		}
 
-		as.log.Info("Before compress", zap.Int("chunk: ", len(zstdChunk)))
+		as.log.Debug("Compressing completed",
+			zap.Int("inputSamples: ", len(pcmData)),
+			zap.Int("outputBytes: ", len(zstdChunk)))
 
 		select {
 		case as.VoiceChan <- zstdChunk:

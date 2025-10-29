@@ -28,8 +28,8 @@ func setupLog() *zap.Logger {
 	flag.Parse()
 
 	switch logLevel {
-	case "info":
-		cfg.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
+	case "debug":
+		cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
 	case "warn":
 		cfg.Level = zap.NewAtomicLevelAt(zapcore.WarnLevel)
 	case "fatal":
