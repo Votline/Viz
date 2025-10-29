@@ -111,6 +111,12 @@ func (b *audioBuffer) played() bool {
 	return played
 }
 
+func (b *audioBuffer) getReadPos() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.rPos
+}
+
 func (b *audioBuffer) resetPlay() {
 	b.mu.Lock()
 	defer b.mu.Unlock()

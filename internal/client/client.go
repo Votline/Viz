@@ -16,17 +16,17 @@ import (
 type Client struct {
 	log *zap.Logger
 	conn *websocket.Conn
-	audioStream *audio.AudioStream
+	as *audio.AudioStream
 }
 func NewClient(log *zap.Logger) (*Client, error) {
-	audioStream, err := audio.NewAS(log)
+	as, err := audio.NewAS(log)
 	if err != nil {
 		log.Error("Couldn't create audioStream for client: ", zap.Error(err))
 		return nil, err
 	}
 	return &Client{
 		log: log,
-		audioStream: audioStream,
+		as: as,
 	}, nil
 }
 
@@ -67,8 +67,8 @@ func (c *Client) StartCall(serverURL string) {
 	}
 
 
-	go c.audioStream.RecordStream()
-	go c.audioStream.PlayStream()
+	go c.as.RecordStream()
+	go c.as.PlayStream()
 	
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -82,7 +82,7 @@ func (c *Client) StartCall(serverURL string) {
 			select{
 			case <-ctx.Done():
 				return
-			case voiceChunk := <-c.audioStream.VoiceChan:
+			case voiceChunk := <-c.as.VoiceChan:
 				encChunk := enc.Encrypt(voiceChunk)
 				if err := c.conn.WriteMessage(websocket.BinaryMessage, encChunk); err != nil {
 					c.log.Error("WS client write error: ", zap.Error(err))
@@ -113,7 +113,7 @@ func (c *Client) StartCall(serverURL string) {
 				if err != nil {
 					c.log.Error("Decrypt msg error: ", zap.Error(err))
 				}
-				c.audioStream.AudioQueue.Push(decMsg)
+				c.as.Queues.Push(decMsg, c.as.Queues.AQ)
 			}
 		}
 	}()

@@ -12,6 +12,7 @@ import (
 type AudioStream struct {
 	log *zap.Logger
 	dur time.Duration
+	waitTime time.Duration
 	
 	bitrate int
 	channels int
@@ -21,7 +22,8 @@ type AudioStream struct {
 	VoiceChan chan []byte
 	audioChan chan []byte
 
-	AudioQueue *audioQueue
+	Queues *allQueue
+
 	playAb *audioBuffer
 	recordAb *audioBuffer
 	playCmpr *compressor.Compressor
@@ -47,11 +49,12 @@ func NewAS(log *zap.Logger) (*AudioStream, error) {
 		log.Error("Create compressor error: ", zap.Error(err))
 		return nil, err
 	}
-	queue := newAQ()
+	queue := newQueue()
 
 	return &AudioStream{
 		log: log,
 		dur: 300,
+		waitTime: 10,
 		
 		channels: chs,
 		bitrate: btr,
@@ -61,7 +64,7 @@ func NewAS(log *zap.Logger) (*AudioStream, error) {
 		VoiceChan: make(chan []byte, 10),
 		audioChan: make(chan []byte, 10),
 		
-		AudioQueue: queue,
+		Queues: queue,
 		playAb: playAb,
 		recordAb: recordAb,
 		playCmpr: playCmpr,
@@ -137,7 +140,7 @@ func (as *AudioStream) RecordStream() {
 				break
 			}
 			as.log.Info("Waiting for buffer")
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(as.waitTime * time.Millisecond)
 		}
 
 
@@ -177,6 +180,37 @@ func (as *AudioStream) PlayStream() {
 		as.recordAb.cleanup()
 	}()
 
+	go func(){
+		for {
+			zstdChunk, ok := as.Queues.pop(as.Queues.AQ).([]byte)
+			if !ok {
+				as.log.Warn("Failed to pop zstdChunk from queue",
+					zap.Int("chunk len", len(zstdChunk)))
+			}
+			if zstdChunk == nil {
+				time.Sleep(as.waitTime * time.Millisecond)
+				continue
+			}
+
+			as.log.Debug("Prebuffer filled, decompressing...",
+				zap.Int("samples: ", len(as.recordAb.data())))
+
+			pcm, err := as.playCmpr.DecompressAudio(as.bufferSize, int(as.sampleRate), as.channels, zstdChunk)
+			if err != nil {
+				as.log.Error("Decompress audio error: ", zap.Error(err))
+				continue
+			}
+
+			as.log.Info("Decompress successfully", zap.Int("pcm: ", len(pcm)))
+
+			as.Queues.Push(pcm, as.Queues.pQ)
+
+			as.log.Debug("Decoded and queued PCM",
+				zap.Int("pcmSamples", len(pcm)),
+				zap.Int("queueSize", as.Queues.length()))
+		}
+	}()
+
 	dev, err := portaudio.DefaultOutputDevice()
 	if err != nil {
 		as.log.Error("Couldn't get default output device")
@@ -209,34 +243,39 @@ func (as *AudioStream) PlayStream() {
 		as.log.Error("Open output stream error: ", zap.Error(err))
 	}
 
+	const targetPrebufPackets = 3
+	for as.Queues.length() < targetPrebufPackets {
+		as.log.Debug("Prebuffing...",
+			zap.Int("current", as.Queues.length()),
+			zap.Int("target", targetPrebufPackets))
+		time.Sleep(as.waitTime * time.Microsecond)
+	}
+
+	as.log.Debug("Prebuffer filled, starting playback")
+
 	for {
-		zstdChunk := as.AudioQueue.pop()
-		if zstdChunk == nil {
-			time.Sleep(10*time.Millisecond)
+		pcm, ok := as.Queues.pop(as.Queues.pQ).([]int16)
+		if ! ok {
+			as.log.Warn("Failed to pop zstdChunk from queue",
+				zap.Int("chunk len", len(pcm)))
+		}
+		if pcm == nil {
+			time.Sleep(as.waitTime * time.Microsecond)
 			continue
 		}
-
-		as.log.Info("Going to decompress")
-
-		pcm, err := as.playCmpr.DecompressAudio(as.bufferSize, int(as.sampleRate), as.channels, zstdChunk)
-		if err != nil {
-			as.log.Error("Decompress audio error: ", zap.Error(err))
-			continue
-		}
-
-		as.log.Info("Before decompress", zap.Int("pcm: ", len(pcm)))
 
 		as.playAb.setPCM(pcm)
 		as.playAb.resetPlay()
 
 		startTime := time.Now()
-		for !as.playAb.played() {
+		samplesToPlay := len(pcm)
+		for as.playAb.getReadPos() < samplesToPlay - (samplesToPlay/10) {
 			if time.Since(startTime) > as.dur*time.Millisecond * 2 {
 				as.log.Warn("Play timeout")
 				break
 			}
 			as.log.Info("Playback")
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(as.waitTime * time.Millisecond)
 		}
 	}
 }

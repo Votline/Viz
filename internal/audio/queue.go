@@ -4,27 +4,46 @@ import (
 	"sync"
 )
 
-type audioQueue struct {
+type allQueue struct {
 	mu sync.Mutex
-	queue [][]byte
+	AQ *queue
+	pQ *queue
 }
-func newAQ() *audioQueue {
-	return &audioQueue{queue: make([][]byte, 0)}
+type queue struct {
+	buf []any
+}
+func newQueue() *allQueue {
+	return &allQueue{
+		AQ: &queue{buf: make([]any, 0)},
+		pQ: &queue{buf: make([]any, 0)},
+	}
 }
 
-func (aq *audioQueue) Push(chunk []byte) {
+func (aq *allQueue) Push(chunk any, q *queue) {
 	aq.mu.Lock()
 	defer aq.mu.Unlock()
-	aq.queue = append(aq.queue, chunk)
+	q.buf = append(q.buf, chunk)
 }
 
-func (aq *audioQueue) pop() []byte {
+func (aq *allQueue) pop(q *queue) any {
 	aq.mu.Lock()
 	defer aq.mu.Unlock()
-	if len(aq.queue) == 0 {
+	if len(q.buf) == 0 {
 		return nil
 	}
-	chunk := aq.queue[0]
-	aq.queue = aq.queue[1:]
+	chunk := q.buf[0]
+	q.buf = q.buf[1:]
 	return chunk
+}
+
+func (aq *allQueue) length() int {
+	aq.mu.Lock()
+	defer aq.mu.Unlock()
+	return len(aq.pQ.buf)
+}
+
+func (aq *allQueue) clearQueue(q *queue) {
+	aq.mu.Lock()
+	defer aq.mu.Unlock()
+	q.buf = make([]any, 0)
 }

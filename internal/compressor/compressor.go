@@ -79,7 +79,7 @@ func (c *Compressor) DecompressAudio(bufSize, smpR, ch int, zstdAudio []byte) ([
 			return nil, err
 		}
 	*/
-	pcm, err := c.decodeOpus(smpR, ch, zstdAudio)
+	pcm, err := c.decodeOpus(ch, zstdAudio)
 	if err != nil {
 		c.log.Error("Decode OPUS to PCM error", zap.Error(err))
 		return nil, err
@@ -88,7 +88,47 @@ func (c *Compressor) DecompressAudio(bufSize, smpR, ch int, zstdAudio []byte) ([
 	return pcm, nil
 }
 
-func (c *Compressor) decodeOpus(sampleRate, channels int, opusBuffer []byte) ([]int16, error) {
+func (c *Compressor) encodeOpus(sampleRate, channels int, pcm []int16) ([]byte, error) {
+	frameSize := sampleRate * c.frameDurMs / 1000 * channels
+
+	if frameSize%channels != 0 {
+		frameSize = (frameSize / channels) * channels
+	}
+	if frameSize < 120 {
+		frameSize = 120
+	}
+	if frameSize > 480 {
+		frameSize = 480
+	}
+
+	frameBytes := make([]byte, 1500)
+	out := make([]byte, 0, len(pcm)/2)
+
+	for i := 0; i+frameSize <= len(pcm); i += frameSize {
+		frame := pcm[i : i+frameSize]
+
+		n, err := c.opusEn.Encode(frame, frameBytes)
+		if err != nil {
+			c.log.Error("Encode PCM to OPUS error",
+				zap.Error(err),
+				zap.Int("frameSize", frameSize),
+				zap.Int("frameIndex", i/frameSize))
+			continue
+		}
+
+		if n > len(frameBytes) {
+			c.log.Warn("Encoded frame too large", zap.Int("size", n))
+			n = len(frameBytes)
+		}
+
+		out = append(out, byte(n>>8), byte(n&0xFF))
+		out = append(out, frameBytes[:n]...)
+	}
+
+	return out, nil
+}
+
+func (c *Compressor) decodeOpus(channels int, opusBuffer []byte) ([]int16, error) {
 	if len(opusBuffer) < 2 {
 		return nil, errors.New("opus buffer too short")
 	}
@@ -154,44 +194,4 @@ func (c *Compressor) decodeOpus(sampleRate, channels int, opusBuffer []byte) ([]
 		zap.Int("totalSamples", len(pcm)))
 
 	return pcm, nil
-}
-
-func (c *Compressor) encodeOpus(sampleRate, channels int, pcm []int16) ([]byte, error) {
-	frameSize := sampleRate * c.frameDurMs / 1000 * channels
-
-	if frameSize%channels != 0 {
-		frameSize = (frameSize / channels) * channels
-	}
-	if frameSize < 120 {
-		frameSize = 120
-	}
-	if frameSize > 480 {
-		frameSize = 480
-	}
-
-	frameBytes := make([]byte, 1500)
-	out := make([]byte, 0, len(pcm)/2)
-
-	for i := 0; i+frameSize <= len(pcm); i += frameSize {
-		frame := pcm[i : i+frameSize]
-
-		n, err := c.opusEn.Encode(frame, frameBytes)
-		if err != nil {
-			c.log.Error("Encode PCM to OPUS error",
-				zap.Error(err),
-				zap.Int("frameSize", frameSize),
-				zap.Int("frameIndex", i/frameSize))
-			continue
-		}
-
-		if n > len(frameBytes) {
-			c.log.Warn("Encoded frame too large", zap.Int("size", n))
-			n = len(frameBytes)
-		}
-
-		out = append(out, byte(n>>8), byte(n&0xFF))
-		out = append(out, frameBytes[:n]...)
-	}
-
-	return out, nil
 }

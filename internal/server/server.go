@@ -39,7 +39,7 @@ func Setup(log *zap.Logger) (*http.Server, error) {
 func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
 
-	audioStream, err := audio.NewAS(log)
+	as, err := audio.NewAS(log)
 	if err != nil {
 		log.Error("Couldn't create audioStream for server: ", zap.Error(err))
 		return mux, err
@@ -65,8 +65,8 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 			log.Fatal("Failed to create encryptor: ", zap.Error(err))
 		}
 
-		go audioStream.RecordStream()
-		go audioStream.PlayStream()
+		go as.RecordStream()
+		go as.PlayStream()
 		
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -78,7 +78,7 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 			defer wg.Done()
 			for {
 				select {
-				case voiceChunk := <-audioStream.VoiceChan:
+				case voiceChunk := <-as.VoiceChan:
 					encChunk := enc.Encrypt(voiceChunk)
 					if err := conn.WriteMessage(websocket.BinaryMessage, encChunk); err != nil {
 						log.Error("WS server write failed: ", zap.Error(err))
@@ -112,7 +112,7 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 						log.Error("Decrypt message error: ", zap.Error(err))
 						continue
 					}
-					audioStream.AudioQueue.Push(decMsg)
+					as.Queues.Push(decMsg, as.Queues.AQ)
 				}
 			}
 		}()
