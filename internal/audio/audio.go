@@ -183,13 +183,13 @@ func (as *AudioStream) PlayStream() {
 	go func(){
 		for {
 			zstdChunk, ok := as.Queues.pop(as.Queues.AQ).([]byte)
-			if !ok {
-				as.log.Warn("Failed to pop zstdChunk from queue",
-					zap.Int("chunk len", len(zstdChunk)))
-			}
 			if zstdChunk == nil {
 				time.Sleep(as.waitTime * time.Millisecond)
 				continue
+			}
+			if !ok {
+				as.log.Warn("Failed to pop zstdChunk from queue",
+					zap.Int("chunk len", len(zstdChunk)))
 			}
 
 			as.log.Debug("Prebuffer filled, decompressing...",
@@ -248,20 +248,20 @@ func (as *AudioStream) PlayStream() {
 		as.log.Debug("Prebuffing...",
 			zap.Int("current", as.Queues.length()),
 			zap.Int("target", targetPrebufPackets))
-		time.Sleep(as.waitTime * time.Microsecond)
+		time.Sleep(as.waitTime * time.Millisecond)
 	}
 
 	as.log.Debug("Prebuffer filled, starting playback")
 
 	for {
 		pcm, ok := as.Queues.pop(as.Queues.pQ).([]int16)
+		if pcm == nil {
+			time.Sleep(as.waitTime * time.Millisecond)
+			continue
+		}
 		if ! ok {
 			as.log.Warn("Failed to pop zstdChunk from queue",
 				zap.Int("chunk len", len(pcm)))
-		}
-		if pcm == nil {
-			time.Sleep(as.waitTime * time.Microsecond)
-			continue
 		}
 
 		as.playAb.setPCM(pcm)
