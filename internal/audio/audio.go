@@ -1,32 +1,30 @@
 package audio
 
 import (
+	"context"
 	"time"
 
-	"go.uber.org/zap"
 	"github.com/gordonklaus/portaudio"
+	"github.com/jj11hh/opus"
+	"go.uber.org/zap"
 
 	"Viz/internal/compressor"
 )
 
 type AudioStream struct {
-	log *zap.Logger
-	dur time.Duration
-	waitTime time.Duration
-	
-	bitrate int
-	channels int
+	log        *zap.Logger
+	dur        time.Duration
+	waitTime   time.Duration
+	bitrate    int
+	channels   int
 	bufferSize int
 	sampleRate float64
-	
-	VoiceChan chan []byte
-	audioChan chan []byte
-
-	Queues *allQueue
-
-	playAb *audioBuffer
-	recordAb *audioBuffer
-	playCmpr *compressor.Compressor
+	VoiceChan  chan []byte
+	audioChan  chan []byte
+	Queues     *allQueue
+	playAb     *audioBuffer
+	recordAb   *audioBuffer
+	playCmpr   *compressor.Compressor
 	recordCmpr *compressor.Compressor
 }
 
@@ -37,37 +35,31 @@ func NewAS(log *zap.Logger) (*AudioStream, error) {
 	bufS := 1024
 	btr := 32000
 	smpR := 48000.0
-	
 	playCmpr, err := compressor.NewCmpr(btr, int(smpR), chs, log)
 	if err != nil {
 		log.Error("Create compressor error: ", zap.Error(err))
 		return nil, err
 	}
-
 	recordCmpr, err := compressor.NewCmpr(32000, 48000, 1, log)
 	if err != nil {
 		log.Error("Create compressor error: ", zap.Error(err))
 		return nil, err
 	}
 	queue := newQueue()
-
 	return &AudioStream{
-		log: log,
-		dur: 300,
-		waitTime: 10,
-		
-		channels: chs,
-		bitrate: btr,
+		log:        log,
+		dur:        300,
+		waitTime:   10,
+		channels:   chs,
+		bitrate:    btr,
 		bufferSize: bufS,
 		sampleRate: smpR,
-		
-		VoiceChan: make(chan []byte, 10),
-		audioChan: make(chan []byte, 10),
-		
-		Queues: queue,
-		playAb: playAb,
-		recordAb: recordAb,
-		playCmpr: playCmpr,
+		VoiceChan:  make(chan []byte, 10),
+		audioChan:  make(chan []byte, 10),
+		Queues:     queue,
+		playAb:     playAb,
+		recordAb:   recordAb,
+		playCmpr:   playCmpr,
 		recordCmpr: recordCmpr,
 	}, err
 }
@@ -77,7 +69,6 @@ func (as *AudioStream) RecordStream() {
 		if r := recover(); r != nil {
 			as.log.Error("PANIC in record audio", zap.Any("recover: ", r))
 		}
-
 		as.recordAb.cleanup()
 	}()
 
@@ -87,27 +78,28 @@ func (as *AudioStream) RecordStream() {
 		return
 	}
 
-	samplesPerMs := int(as.sampleRate * float64(as.dur)/1000 * float64(as.channels))
+	samplesPerMs := int(as.sampleRate * float64(as.dur) / 1000 * float64(as.channels))
 
 	as.log.Debug("Starting recording",
-		zap.Int("durationMs: ", int(as.dur)),
-		zap.Int("samples: ", samplesPerMs),
-		zap.Float64("sampleRate: ", as.sampleRate))
+		zap.Int("durationMs", int(as.dur)),
+		zap.Int("samples", samplesPerMs),
+		zap.Float64("sampleRate", as.sampleRate))
 
 	as.recordAb.resetPCM(samplesPerMs)
+
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
 			Input: portaudio.StreamDeviceParameters{
-				Device: dev,
+				Device:   dev,
 				Channels: as.channels,
 			},
 			Output: portaudio.StreamDeviceParameters{
 				Channels: 0,
 			},
-			SampleRate: as.sampleRate,
+			SampleRate:      as.sampleRate,
 			FramesPerBuffer: as.bufferSize,
 		},
-		func (in []float32) {
+		func(in []float32) {
 			as.recordAb.write(in)
 		},
 	)
@@ -121,8 +113,8 @@ func (as *AudioStream) RecordStream() {
 		return
 	}
 
-
 	cleanupTicker := time.NewTicker(30 * time.Second)
+
 	for {
 		as.recordAb.resetPCM(samplesPerMs)
 
@@ -134,7 +126,7 @@ func (as *AudioStream) RecordStream() {
 
 		startTime := time.Now()
 		for !as.recordAb.recorded() {
-			if time.Since(startTime) > as.dur * time.Millisecond * 2 {
+			if time.Since(startTime) > as.dur*time.Millisecond*2 {
 				as.log.Warn("Record timeout")
 				as.recordAb.stopRecording()
 				break
@@ -143,9 +135,8 @@ func (as *AudioStream) RecordStream() {
 			time.Sleep(as.waitTime * time.Millisecond)
 		}
 
-
 		as.log.Debug("Buffer filled, compressing...",
-			zap.Int("samples: ", len(as.recordAb.data())))
+			zap.Int("samples", len(as.recordAb.data())))
 
 		pcmData := as.recordAb.data()
 		if len(pcmData) == 0 {
@@ -160,12 +151,12 @@ func (as *AudioStream) RecordStream() {
 		}
 
 		as.log.Debug("Compressing completed",
-			zap.Int("inputSamples: ", len(pcmData)),
-			zap.Int("outputBytes: ", len(zstdChunk)))
+			zap.Int("inputSamples", len(pcmData)),
+			zap.Int("outputBytes", len(zstdChunk)))
 
-		select {
+		select{
 		case as.VoiceChan <- zstdChunk:
-		case <- time.After(100 * time.Millisecond):
+		case <-time.After(100 * time.Millisecond):
 			as.log.Warn("Channel full, dropping packet")
 		}
 	}
@@ -176,12 +167,18 @@ func (as *AudioStream) PlayStream() {
 		if r := recover(); r != nil {
 			as.log.Error("PANIC in audio playback", zap.Any("recvoer: ", r))
 		}
-
 		as.recordAb.cleanup()
 	}()
 
-	go func(){
+	go func() {
+		lastReinit := time.Now()
+
 		for {
+			if time.Since(lastReinit) > 5*time.Second {
+				as.resetWASM()
+				lastReinit = time.Now()
+			}
+
 			zstdChunk, ok := as.Queues.pop(as.Queues.AQ).([]byte)
 			if zstdChunk == nil {
 				time.Sleep(as.waitTime * time.Millisecond)
@@ -193,7 +190,7 @@ func (as *AudioStream) PlayStream() {
 			}
 
 			as.log.Debug("Prebuffer filled, decompressing...",
-				zap.Int("samples: ", len(as.recordAb.data())))
+				zap.Int("samples", len(as.recordAb.data())))
 
 			pcm, err := as.playCmpr.DecompressAudio(as.bufferSize, int(as.sampleRate), as.channels, zstdChunk)
 			if err != nil {
@@ -201,7 +198,8 @@ func (as *AudioStream) PlayStream() {
 				continue
 			}
 
-			as.log.Info("Decompress successfully", zap.Int("pcm: ", len(pcm)))
+			as.log.Info("Decompress successfully",
+				zap.Int("pcm", len(pcm)))
 
 			as.Queues.Push(pcm, as.Queues.pQ)
 
@@ -216,20 +214,20 @@ func (as *AudioStream) PlayStream() {
 		as.log.Error("Couldn't get default output device")
 		return
 	}
-	
+
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
 			Input: portaudio.StreamDeviceParameters{
 				Channels: 0,
 			},
 			Output: portaudio.StreamDeviceParameters{
-				Device: dev,
+				Device:   dev,
 				Channels: as.channels,
 			},
-			SampleRate: as.sampleRate,
+			SampleRate:      as.sampleRate,
 			FramesPerBuffer: as.bufferSize,
 		},
-		func (in, out []float32) {
+		func(in, out []float32) {
 			as.playAb.read(out)
 		},
 	)
@@ -259,7 +257,7 @@ func (as *AudioStream) PlayStream() {
 			time.Sleep(as.waitTime * time.Millisecond)
 			continue
 		}
-		if ! ok {
+		if !ok {
 			as.log.Warn("Failed to pop zstdChunk from queue",
 				zap.Int("chunk len", len(pcm)))
 		}
@@ -269,8 +267,9 @@ func (as *AudioStream) PlayStream() {
 
 		startTime := time.Now()
 		samplesToPlay := len(pcm)
-		for as.playAb.getReadPos() < samplesToPlay - (samplesToPlay/10) {
-			if time.Since(startTime) > as.dur*time.Millisecond * 2 {
+
+		for as.playAb.getReadPos() < samplesToPlay-(samplesToPlay/10) {
+			if time.Since(startTime) > as.dur*time.Millisecond*2 {
 				as.log.Warn("Play timeout")
 				break
 			}
@@ -278,4 +277,28 @@ func (as *AudioStream) PlayStream() {
 			time.Sleep(as.waitTime * time.Millisecond)
 		}
 	}
+}
+
+func (as *AudioStream) resetWASM() {
+	ctx := context.Background()
+	if err := opus.CloseWasmContext(ctx); err != nil {
+		as.log.Error("Failed to close WASM context", zap.Error(err))
+	}
+
+	newPlayCmpr, err := compressor.NewCmpr(as.bitrate, int(as.sampleRate), as.channels, as.log)
+	if err != nil {
+		as.log.Error("Failed to create new play compressor", zap.Error(err))
+		return
+	}
+
+	newRecordCmpr, err := compressor.NewCmpr(as.bitrate, int(as.sampleRate), as.channels, as.log)
+	if err != nil {
+		as.log.Error("Failed to create new record compressor", zap.Error(err))
+		return
+	}
+
+	as.playCmpr = newPlayCmpr
+	as.recordCmpr = newRecordCmpr
+
+	as.log.Info("WASM context reset successfully")
 }
