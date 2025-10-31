@@ -228,7 +228,7 @@ func (as *AudioStream) PlayStream() {
 	as.log.Debug("Prebuffer filled, starting playback")
 
 	for {
-		if as.Queues.length(as.Queues.pQ) > 2 {
+		if as.Queues.length(as.Queues.pQ) > 3 {
 			pcm, ok := as.Queues.pop(as.Queues.pQ).([]int16)
 			if pcm != nil && ok{
 				as.playAb.setPCM(pcm)

@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"Viz/internal/audio"
+	"Viz/internal/batch"
 	//"Viz/internal/encryptor"
 )
 
@@ -71,18 +72,26 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		const batchSize = 3
 		var wg sync.WaitGroup
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			batchBuffer := make([][]byte, 0, batchSize)
 			for {
 				select {
 				case voiceChunk := <-as.VoiceChan:
-					if err := conn.WriteMessage(websocket.BinaryMessage, voiceChunk); err != nil {
-						log.Error("WS server write failed: ", zap.Error(err))
-						cancel()
-						return
+					batchBuffer = append(batchBuffer, voiceChunk)
+
+					if len(batchBuffer) == batchSize {
+						packedBatch := batch.PackBatch(batchBuffer)
+						if err := conn.WriteMessage(websocket.BinaryMessage, packedBatch); err != nil {
+							log.Error("WS server write failed: ", zap.Error(err))
+							cancel()
+							return
+						}
+						batchBuffer = batchBuffer[:0]
 					}
 				case <-ctx.Done():
 					return
@@ -107,12 +116,15 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 						return
 					}
 
-					if len(msg)%2 != 0 {
-						log.Warn("Invalid PCM data length")
+					frames, err := batch.UnpackBatch(msg)
+					if err != nil {
+						log.Error("Failed to unpack batch", zap.Error(err))
 						continue
 					}
 
-					as.Queues.Push(msg, as.Queues.AQ)
+					for _, frame := range frames {
+						as.Queues.Push(frame, as.Queues.AQ)
+					}
 				}
 			}
 		}()

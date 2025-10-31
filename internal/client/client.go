@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"Viz/internal/audio"
+	"Viz/internal/batch"
 	// "Viz/internal/encryptor"
 )
 
@@ -74,20 +75,28 @@ func (c *Client) StartCall(serverURL string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	const batchSize = 3
 	var wg sync.WaitGroup
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		batchBuffer := make([][]byte, 0, batchSize)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case voiceChunk := <-c.as.VoiceChan:
-				if err := c.conn.WriteMessage(websocket.BinaryMessage, voiceChunk); err != nil {
-					c.log.Error("WS client write error: ", zap.Error(err))
-					cancel()
-					return
+				batchBuffer = append(batchBuffer, voiceChunk)
+				
+				if len(batchBuffer) == batchSize {
+					packedBatch := batch.PackBatch(batchBuffer)
+					if err := c.conn.WriteMessage(websocket.BinaryMessage, packedBatch); err != nil {
+						c.log.Error("WS client write error: ", zap.Error(err))
+						cancel()
+						return
+					}
+					batchBuffer = batchBuffer[:0]
 				}
 			default:
 				time.Sleep(1 * time.Microsecond)
@@ -109,7 +118,16 @@ func (c *Client) StartCall(serverURL string) {
 					cancel()
 					return
 				}
-				c.as.Queues.Push(msg, c.as.Queues.AQ)
+
+				frames, err := batch.UnpackBatch(msg)
+				if err != nil {
+					c.log.Error("Failed to unpack batch", zap.Error(err))
+					continue
+				}
+
+				for _, frame := range frames {
+					c.as.Queues.Push(frame, c.as.Queues.AQ)
+				}
 			}
 		}
 	}()
