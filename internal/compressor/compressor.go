@@ -79,9 +79,8 @@ func (c *Compressor) CompressVoice(pcm []int16) ([]byte, error) {
 		c.log.Error("Failed to encode opus audio", zap.Error(err))
 		return nil, err
 	}
-/*
-	return c.zstdEn.EncodeAll(voice, nil), nil*/
-	return encoded, nil
+
+	return c.zstdEn.EncodeAll(encoded, nil), nil
 }
 
 func (c *Compressor) DecompressAudio(bufSize int, zstdAudio []byte) ([]int16, error) {
@@ -92,15 +91,14 @@ func (c *Compressor) DecompressAudio(bufSize int, zstdAudio []byte) ([]int16, er
 		return nil, errors.New("empty audio data")
 	}
 	
-	/*	audio, err := c.zstdDec.DecodeAll(zstdAudio, nil)
-		if err != nil {
-			c.log.Error("Decode audio error: ", zap.Error(err))
-			return nil, err
-		}
+	audio, err := c.zstdDec.DecodeAll(zstdAudio, nil)
+	if err != nil {
+		c.log.Error("Decode audio error: ", zap.Error(err))
+		return nil, err
+	}
 	
-	return pcm, nil*/
 
-	decoded, err := c.decode(zstdAudio, bufSize)
+	decoded, err := c.decode(audio, bufSize)
 	if err != nil {
 		c.log.Error("Failed to decode opus audio", zap.Error(err))
 		return nil, err

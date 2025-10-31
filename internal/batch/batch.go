@@ -2,57 +2,45 @@ package batch
 
 import (
 	"errors"
-	"encoding/binary"
 )
 
 func PackBatch(batch [][]byte) []byte {
-	totalSize := 4
-	for _, chunk := range batch {
-		totalSize += 4 + len(chunk)
+	result := []byte{byte(len(batch))}
+
+	for _, frame := range batch {
+		result = append(result, byte(len(frame)>>8), byte(len(frame)))
+		result = append(result, frame...)
 	}
-
-	buffer := make([]byte, totalSize)
-	binary.BigEndian.PutUint32(buffer[0:4], uint32(len(batch)))
-
-	offset := 4
-	for _, chunk := range batch {
-		binary.BigEndian.PutUint32(buffer[offset:offset+4], uint32(len(chunk)))
-		offset += 4
-
-		copy(buffer[offset:offset+len(chunk)], chunk)
-		offset += len(chunk)
-
-	}
-
-	return buffer
+	
+	return result
 }
 
 func UnpackBatch(data []byte) ([][]byte, error) {
-	if len(data) < 4 {
-		return nil, errors.New("Invalid batch data")
+	if len(data) == 0 {
+		return nil, errors.New("Empty data")
 	}
-	
-	frameCount := int(binary.BigEndian.Uint32(data[0:4]))
+
+	frameCount := int(data[0])
 	frames := make([][]byte, 0, frameCount)
 
-	offset := 4
+	pos := 1
 	for i := 0; i < frameCount; i++ {
-		if offset+4 > len(data) {
-			return nil, errors.New("Invalid batch format")
+		if pos+2 >= len(data) {
+			return nil, errors.New("Invalid packet")
 		}
 
-		frameSize := int(binary.BigEndian.Uint32(data[offset:offset+4]))
-		offset += 4
+		frameSize := int(data[pos])<<8 | int(data[pos+1])
+		pos += 2
 
-		if offset+frameSize > len(data) {
-			return nil, errors.New("Frame size exceeds data")
+		if pos+frameSize > len(data) {
+			return nil, errors.New("Frame bigger than packet")
 		}
 
 		frame := make([]byte, frameSize)
-		copy(frame, data[offset:offset+frameSize])
+		copy(frame, data[pos:pos+frameSize])
 		frames = append(frames, frame)
 
-		offset += frameSize
+		pos += frameSize
 	}
 
 	return frames, nil
