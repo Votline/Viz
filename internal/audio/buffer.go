@@ -31,8 +31,18 @@ func (b *audioBuffer) write(samples []float32) {
 		return
 	}
 
+	remaining := len(b.pcm) - b.wPos
+	if remaining <= 0 {
+		return
+	}
+
+	if len(samples) > remaining {
+		samples = samples[:remaining]
+	}
+
 	for _, sample := range samples {
 		if b.wPos >= len(b.pcm) {
+			b.recording = false
 			b.log.Warn("Buffer overflow",
 				zap.Int("wPos: ", b.wPos),
 				zap.Int("bufferSize: ", len(b.pcm)))
@@ -96,19 +106,6 @@ func (b *audioBuffer) recorded() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.wPos >= len(b.pcm)
-}
-
-func (b *audioBuffer) played() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	played :=  b.rPos >= len(b.pcm)
-	if played {
-		b.log.Debug("Buffer fully played",
-			zap.Int("rPos: ", b.rPos),
-			zap.Int("pcmLen: ", len(b.pcm)))
-	}
-	return played
 }
 
 func (b *audioBuffer) getReadPos() int {

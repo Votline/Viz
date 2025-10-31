@@ -1,19 +1,26 @@
 package compressor
 
 import (
+	"sync"
 	"errors"
 
+	"go.uber.org/zap"
 	"github.com/jj11hh/opus"
 	"github.com/klauspost/compress/zstd"
-	"go.uber.org/zap"
 )
 
 type Compressor struct {
+	mu sync.Mutex
 	log     *zap.Logger
+
 	opusEn  *opus.Encoder
 	opusDec *opus.Decoder
 	zstdEn  *zstd.Encoder
 	zstdDec *zstd.Decoder
+
+	ch int
+	btr int
+	smpR int
 
 	frameDurMs int
 }
@@ -50,12 +57,27 @@ func NewCmpr(btr, smpR, ch int, log *zap.Logger) (*Compressor, error) {
 		opusDec:    opusDec,
 		zstdEn:     zstdEn,
 		zstdDec:    zstdDec,
+		
+		ch: ch,
+		btr: btr,
+		smpR: smpR,
+
 		frameDurMs: 10,
 	}, nil
 }
 
-func (c *Compressor) CompressVoice(smpR, ch int, pcm []int16) ([]byte, error) {
-	voice, err := c.encodeOpus(smpR, ch, pcm)
+func (c *Compressor) CompressVoice(pcm []int16) ([]byte, error) {
+	if c.opusEn == nil {
+		return nil, errors.New("Opus Encoder not initialized")
+	}
+	if len(pcm) == 0 {
+		return nil, errors.New("empty PCM data")
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	voice, err := c.encodeOpus(pcm)
 	if err != nil {
 		c.log.Error("Encode PCM to OPUS failed", zap.Error(err))
 		return nil, err
@@ -65,13 +87,22 @@ func (c *Compressor) CompressVoice(smpR, ch int, pcm []int16) ([]byte, error) {
 	//return c.zstdEn.EncodeAll(voice, nil), nil
 }
 
-func (c *Compressor) DecompressAudio(bufSize, smpR, ch int, zstdAudio []byte) ([]int16, error) {
+func (c *Compressor) DecompressAudio(bufSize int, zstdAudio []byte) ([]int16, error) {
 	defer func() {
 		if r := recover(); r != nil {
 			c.log.Error("recover: PANIC in DecompressAudio",
 				zap.Any("recover", r))
 		}
 	}()
+	if c.opusEn == nil {
+		return nil, errors.New("Opus Encoder not initialized")
+	}
+	if len(zstdAudio) == 0 {
+		return nil, errors.New("empty audio data")
+	}
+	
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	/*	audio, err := c.zstdDec.DecodeAll(zstdAudio, nil)
 		if err != nil {
@@ -79,7 +110,7 @@ func (c *Compressor) DecompressAudio(bufSize, smpR, ch int, zstdAudio []byte) ([
 			return nil, err
 		}
 	*/
-	pcm, err := c.decodeOpus(ch, zstdAudio)
+	pcm, err := c.decodeOpus(zstdAudio)
 	if err != nil {
 		c.log.Error("Decode OPUS to PCM error", zap.Error(err))
 		return nil, err
@@ -88,11 +119,13 @@ func (c *Compressor) DecompressAudio(bufSize, smpR, ch int, zstdAudio []byte) ([
 	return pcm, nil
 }
 
-func (c *Compressor) encodeOpus(sampleRate, channels int, pcm []int16) ([]byte, error) {
-	frameSize := sampleRate * c.frameDurMs / 1000 * channels
+func (c *Compressor) encodeOpus(pcm []int16) ([]byte, error) {
+	pcmCopy := make([]int16, len(pcm))
+	copy(pcmCopy, pcm)
+	frameSize := c.smpR * c.frameDurMs / 1000 * c.ch
 
-	if frameSize%channels != 0 {
-		frameSize = (frameSize / channels) * channels
+	if frameSize%c.ch != 0 {
+		frameSize = (frameSize / c.ch) * c.ch
 	}
 	if frameSize < 120 {
 		frameSize = 120
@@ -102,10 +135,10 @@ func (c *Compressor) encodeOpus(sampleRate, channels int, pcm []int16) ([]byte, 
 	}
 
 	frameBytes := make([]byte, 1500)
-	out := make([]byte, 0, len(pcm)/2)
+	out := make([]byte, 0, len(pcmCopy)/2)
 
-	for i := 0; i+frameSize <= len(pcm); i += frameSize {
-		frame := pcm[i : i+frameSize]
+	for i := 0; i+frameSize <= len(pcmCopy); i += frameSize {
+		frame := pcmCopy[i : i+frameSize]
 
 		n, err := c.opusEn.Encode(frame, frameBytes)
 		if err != nil {
@@ -128,7 +161,7 @@ func (c *Compressor) encodeOpus(sampleRate, channels int, pcm []int16) ([]byte, 
 	return out, nil
 }
 
-func (c *Compressor) decodeOpus(channels int, opusBuffer []byte) ([]int16, error) {
+func (c *Compressor) decodeOpus(opusBuffer []byte) ([]int16, error) {
 	if len(opusBuffer) < 2 {
 		return nil, errors.New("opus buffer too short")
 	}
@@ -141,7 +174,7 @@ func (c *Compressor) decodeOpus(channels int, opusBuffer []byte) ([]int16, error
 	c.log.Debug("Starting opus decoding",
 		zap.Int("inputBytes", len(opusBuffer)))
 
-	tempSamples := make([]int16, 480*channels)
+	tempSamples := make([]int16, 480*c.ch)
 
 	for pos+2 <= len(opusBuffer) {
 		n := int(opusBuffer[pos])<<8 | int(opusBuffer[pos+1])
