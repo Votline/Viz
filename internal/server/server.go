@@ -79,13 +79,7 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 			for {
 				select {
 				case voiceChunk := <-as.VoiceChan:
-					byteData := make([]byte, len(voiceChunk)*2)
-					for i, sample := range voiceChunk {
-						byteData[i*2] = byte(sample & 0xFF)
-						byteData[i*2+1] = byte((sample >> 8) & 0xFF)
-					}
-
-					if err := conn.WriteMessage(websocket.BinaryMessage, byteData); err != nil {
+					if err := conn.WriteMessage(websocket.BinaryMessage, voiceChunk); err != nil {
 						log.Error("WS server write failed: ", zap.Error(err))
 						cancel()
 						return
@@ -118,12 +112,7 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 						continue
 					}
 
-					pcmData := make([]int16, len(msg)/2)
-					for i := 0; i < len(pcmData); i++ {
-						pcmData[i] = int16(msg[i*2]) | (int16(msg[i*2+1]) << 8)
-					}
-
-					as.Queues.Push(pcmData, as.Queues.AQ)
+					as.Queues.Push(msg, as.Queues.AQ)
 				}
 			}
 		}()

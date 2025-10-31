@@ -22,8 +22,8 @@ type AudioStream struct {
 	bufferSize int
 	sampleRate float64
 	
-	VoiceChan  chan []int16
-	audioChan  chan []int16
+	VoiceChan  chan []byte
+	audioChan  chan []byte
 	
 	Queues     *allQueue
 	
@@ -38,15 +38,16 @@ func NewAS(log *zap.Logger) (*AudioStream, error) {
 	playAb := newAB(1.0, log)
 	recordAb := newAB(1.0, log)
 	chs := 1
-	bufS := 1024
+	dur := 100
 	btr := 32000
 	smpR := 48000.0
-	playCmpr, err := compressor.NewCmpr(btr, int(smpR), chs, log)
+	bufS := int(smpR * float64(dur) / 1000) * chs
+	playCmpr, err := compressor.NewCmpr(btr, int(smpR), chs, dur, log)
 	if err != nil {
 		log.Error("Create compressor error: ", zap.Error(err))
 		return nil, err
 	}
-	recordCmpr, err := compressor.NewCmpr(btr, int(smpR), chs, log)
+	recordCmpr, err := compressor.NewCmpr(btr, int(smpR), chs, dur, log)
 	if err != nil {
 		log.Error("Create compressor error: ", zap.Error(err))
 		return nil, err
@@ -54,7 +55,7 @@ func NewAS(log *zap.Logger) (*AudioStream, error) {
 	queue := newQueue()
 	return &AudioStream{
 		log:        log,
-		dur:        300,
+		dur:        time.Duration(dur),
 		waitTime:   1,
 		
 		channels:   chs,
@@ -62,8 +63,8 @@ func NewAS(log *zap.Logger) (*AudioStream, error) {
 		bufferSize: bufS,
 		sampleRate: smpR,
 		
-		VoiceChan:  make(chan []int16, 100),
-		audioChan:  make(chan []int16, 100),
+		VoiceChan:  make(chan []byte, 100),
+		audioChan:  make(chan []byte, 100),
 		
 		Queues:     queue,
 		
@@ -82,7 +83,7 @@ func (as *AudioStream) RecordStream() {
 		return
 	}
 
-	samplesPerMs := int(as.sampleRate * float64(as.dur) / 1000 * float64(as.channels))
+	samplesPerMs := int(as.sampleRate * float64(as.dur) / 1000) * as.channels
 
 	as.log.Debug("Starting recording",
 		zap.Int("durationMs", int(as.dur)),
@@ -101,7 +102,7 @@ func (as *AudioStream) RecordStream() {
 				Channels: 0,
 			},
 			SampleRate:      as.sampleRate,
-			FramesPerBuffer: as.bufferSize,
+			FramesPerBuffer: samplesPerMs,
 		},
 		func(in []float32) {
 			as.recordAb.write(in)
@@ -168,7 +169,7 @@ func (as *AudioStream) RecordStream() {
 func (as *AudioStream) PlayStream() {
 	go func() {
 		for {
-			zstdChunk, ok := as.Queues.pop(as.Queues.AQ).([]int16)
+			zstdChunk, ok := as.Queues.pop(as.Queues.AQ).([]byte)
 			if zstdChunk != nil && ok {
 
 				as.log.Debug("Prebuffer filled, decompressing...",

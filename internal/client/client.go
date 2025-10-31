@@ -84,12 +84,7 @@ func (c *Client) StartCall(serverURL string) {
 			case <-ctx.Done():
 				return
 			case voiceChunk := <-c.as.VoiceChan:
-				byteData := make([]byte, len(voiceChunk)*2)
-				for i, sample := range voiceChunk {
-					byteData[i*2] = byte(sample & 0xFF)
-					byteData[i*2+1] = byte((sample >> 8) & 0xFF)
-				}
-				if err := c.conn.WriteMessage(websocket.BinaryMessage, byteData); err != nil {
+				if err := c.conn.WriteMessage(websocket.BinaryMessage, voiceChunk); err != nil {
 					c.log.Error("WS client write error: ", zap.Error(err))
 					cancel()
 					return
@@ -114,11 +109,7 @@ func (c *Client) StartCall(serverURL string) {
 					cancel()
 					return
 				}
-				pcmData := make([]int16, len(msg)/2)
-				for i := 0; i < len(pcmData); i++ {
-					pcmData[i] = int16(msg[i*2]) | (int16(msg[i*2+1]) << 8)
-				}
-				c.as.Queues.Push(pcmData, c.as.Queues.AQ)
+				c.as.Queues.Push(msg, c.as.Queues.AQ)
 			}
 		}
 	}()
