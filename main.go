@@ -1,15 +1,15 @@
 package main
 
 import (
-	"context"
-	"flag"
 	"fmt"
 	"sync"
+	"flag"
+	"context"
 
-	"github.com/gordonklaus/portaudio"
-	"github.com/jj11hh/opus"
 	"go.uber.org/zap"
+	"github.com/jj11hh/opus"
 	"go.uber.org/zap/zapcore"
+	"github.com/gordonklaus/portaudio"
 
 	"Viz/internal/client"
 	"Viz/internal/server"
@@ -22,8 +22,6 @@ var (
 
 func setupLog() *zap.Logger {
 	cfg := zap.NewDevelopmentConfig()
-	cfg.OutputPaths = []string{"app.log", "stdout"}
-	cfg.ErrorOutputPaths = []string{"errors.log"}
 	cfg.EncoderConfig.TimeKey = "time"
 	cfg.EncoderConfig.LevelKey = "level"
 	cfg.EncoderConfig.MessageKey = "msg"

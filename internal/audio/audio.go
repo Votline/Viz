@@ -3,11 +3,8 @@ package audio
 import (
 	"sync"
 	"time"
-	"runtime"
-	"context"
 
 	"go.uber.org/zap"
-	"github.com/jj11hh/opus"
 	"github.com/gordonklaus/portaudio"
 
 	"Viz/internal/compressor"
@@ -25,8 +22,8 @@ type AudioStream struct {
 	bufferSize int
 	sampleRate float64
 	
-	VoiceChan  chan []byte
-	audioChan  chan []byte
+	VoiceChan  chan []int16
+	audioChan  chan []int16
 	
 	Queues     *allQueue
 	
@@ -65,8 +62,8 @@ func NewAS(log *zap.Logger) (*AudioStream, error) {
 		bufferSize: bufS,
 		sampleRate: smpR,
 		
-		VoiceChan:  make(chan []byte, 100),
-		audioChan:  make(chan []byte, 100),
+		VoiceChan:  make(chan []int16, 100),
+		audioChan:  make(chan []int16, 100),
 		
 		Queues:     queue,
 		
@@ -79,13 +76,6 @@ func NewAS(log *zap.Logger) (*AudioStream, error) {
 }
 
 func (as *AudioStream) RecordStream() {
-	defer func(){
-		if r := recover(); r != nil {
-			as.log.Error("PANIC in record audio", zap.Any("recover: ", r))
-		}
-		as.recordAb.cleanup()
-	}()
-
 	dev, err := portaudio.DefaultInputDevice()
 	if err != nil {
 		as.log.Error("Couldn't get default output device")
@@ -127,14 +117,8 @@ func (as *AudioStream) RecordStream() {
 		return
 	}
 
-	lastReinit := time.Now()
 	cleanupTicker := time.NewTicker(30 * time.Second)
 	for {
-		if time.Since(lastReinit) > 20*time.Second {
-				as.resetWASM()
-				lastReinit = time.Now()
-		}
-		
 		as.recordAb.resetPCM(samplesPerMs)
 
 		startTime := time.Now()
@@ -150,7 +134,7 @@ func (as *AudioStream) RecordStream() {
 		as.recordAb.stopRecording()
 
 		as.log.Debug("Buffer filled, compressing...",
-			zap.Int("samples", len(as.recordAb.data())))
+			zap.Int("samples", len(as.playAb.data())))
 
 		pcmData := as.recordAb.data()
 		if len(pcmData) == 0 {
@@ -182,55 +166,29 @@ func (as *AudioStream) RecordStream() {
 }
 
 func (as *AudioStream) PlayStream() {
-	defer func(){
-		if r := recover(); r != nil {
-			as.log.Error("PANIC in audio playback", zap.Any("recvoer: ", r))
-		}
-		as.playAb.cleanup()
-	}()
-
 	go func() {
-		defer func(){
-			if r := recover(); r != nil {
-				as.log.Error("PANIC in audio playback", zap.Any("recover", r))
-			}
-		}()
-
-		lastReinit := time.Now()
 		for {
-			if time.Since(lastReinit) > 5*time.Second {
-				as.resetWASM()
-				lastReinit = time.Now()
+			zstdChunk, ok := as.Queues.pop(as.Queues.AQ).([]int16)
+			if zstdChunk != nil && ok {
+
+				as.log.Debug("Prebuffer filled, decompressing...",
+					zap.Int("samples", len(as.recordAb.data())))
+
+				pcm, err := as.playCmpr.DecompressAudio(as.bufferSize, zstdChunk)
+				if err != nil {
+					as.log.Error("Decompress audio error: ", zap.Error(err))
+					continue
+				}
+
+				as.log.Debug("Decompress successfully",
+					zap.Int("pcm", len(pcm)))
+
+				as.Queues.Push(pcm, as.Queues.pQ)
+
+				as.log.Debug("Decoded and queued PCM",
+					zap.Int("pcmSamples", len(pcm)),
+					zap.Int("queueSize", as.Queues.length(as.Queues.pQ)))
 			}
-
-			zstdChunk, ok := as.Queues.pop(as.Queues.AQ).([]byte)
-			if zstdChunk == nil {
-				time.Sleep(as.waitTime * time.Millisecond)
-				continue
-			}
-			if !ok {
-				as.log.Warn("Failed to pop zstdChunk from queue",
-					zap.Int("chunk len", len(zstdChunk)))
-				continue
-			}
-
-			as.log.Debug("Prebuffer filled, decompressing...",
-				zap.Int("samples", len(as.recordAb.data())))
-
-			pcm, err := as.playCmpr.DecompressAudio(as.bufferSize, zstdChunk)
-			if err != nil {
-				as.log.Error("Decompress audio error: ", zap.Error(err))
-				continue
-			}
-
-			as.log.Debug("Decompress successfully",
-				zap.Int("pcm", len(pcm)))
-
-			as.Queues.Push(pcm, as.Queues.pQ)
-
-			as.log.Debug("Decoded and queued PCM",
-				zap.Int("pcmSamples", len(pcm)),
-				zap.Int("queueSize", as.Queues.length(as.Queues.pQ)))
 		}
 	}()
 
@@ -299,41 +257,3 @@ func (as *AudioStream) PlayStream() {
 		}
 	}
 }
-
-func (as *AudioStream) resetWASM() {
-	as.mu.Lock()
-	defer as.mu.Unlock()
-
-	runtime.GC()
-	runtime.Gosched()
-
-	ctx := context.Background()
-	if err := opus.CloseWasmContext(ctx); err != nil {
-		as.log.Fatal("Failed to close WASM context", zap.Error(err))
-	}
-
-	as.log.Debug("WASM context closed, reinitializing...")
-
-	if wCTX, err := opus.GetWasmContext(ctx); err != nil || wCTX == nil {
-		as.log.Fatal("Failed to reinitialize WASM context", zap.Error(err))
-	}
-
-	newPlayCmpr, err := compressor.NewCmpr(as.bitrate, int(as.sampleRate), as.channels, as.log)
-	if err != nil {
-		as.log.Fatal("Failed to create new play compressor", zap.Error(err))
-	}
-
-	newRecordCmpr, err := compressor.NewCmpr(as.bitrate, int(as.sampleRate), as.channels, as.log)
-	if err != nil {
-		as.log.Fatal("Failed to create new record compressor", zap.Error(err))
-		return
-	}
-
-	as.playCmpr = newPlayCmpr
-	as.recordCmpr = newRecordCmpr
-
-	time.Sleep(100 * time.Millisecond)
-
-	as.log.Debug("WASM context reset successfully")
-}
-

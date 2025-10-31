@@ -3,21 +3,22 @@ package client
 import (
 	"sync"
 	"time"
-	"net/url"
 	"context"
+	"net/url"
 
 	"go.uber.org/zap"
 	"github.com/gorilla/websocket"
 
 	"Viz/internal/audio"
-	"Viz/internal/encryptor"
+	// "Viz/internal/encryptor"
 )
 
 type Client struct {
-	log *zap.Logger
+	log  *zap.Logger
 	conn *websocket.Conn
-	as *audio.AudioStream
+	as   *audio.AudioStream
 }
+
 func NewClient(log *zap.Logger) (*Client, error) {
 	as, err := audio.NewAS(log)
 	if err != nil {
@@ -26,7 +27,7 @@ func NewClient(log *zap.Logger) (*Client, error) {
 	}
 	return &Client{
 		log: log,
-		as: as,
+		as:  as,
 	}, nil
 }
 
@@ -43,8 +44,8 @@ func (c *Client) connect(serverURL string) error {
 
 	u := url.URL{
 		Scheme: scheme,
-		Host: parsed.Host,
-		Path: "/ws",
+		Host:   parsed.Host,
+		Path:   "/ws",
 	}
 
 	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
@@ -60,46 +61,50 @@ func (c *Client) connect(serverURL string) error {
 
 func (c *Client) StartCall(serverURL string) {
 	c.connect(serverURL)
-
-	enc, err := encryptor.Setup(c.log, c.conn)
-	if err != nil {
-		c.log.Error("Failed to create encryptor: ", zap.Error(err))
-	}
-
+	/*
+		enc, err := encryptor.Setup(c.log, c.conn)
+		if err != nil {
+			c.log.Error("Failed to create encryptor: ", zap.Error(err))
+		}
+	*/
 
 	go c.as.RecordStream()
 	go c.as.PlayStream()
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	var wg sync.WaitGroup
 
 	wg.Add(1)
-	go func(){
+	go func() {
 		defer wg.Done()
 		for {
-			select{
+			select {
 			case <-ctx.Done():
 				return
 			case voiceChunk := <-c.as.VoiceChan:
-				encChunk := enc.Encrypt(voiceChunk)
-				if err := c.conn.WriteMessage(websocket.BinaryMessage, encChunk); err != nil {
+				byteData := make([]byte, len(voiceChunk)*2)
+				for i, sample := range voiceChunk {
+					byteData[i*2] = byte(sample & 0xFF)
+					byteData[i*2+1] = byte((sample >> 8) & 0xFF)
+				}
+				if err := c.conn.WriteMessage(websocket.BinaryMessage, byteData); err != nil {
 					c.log.Error("WS client write error: ", zap.Error(err))
 					cancel()
 					return
 				}
 			default:
-				time.Sleep(1*time.Microsecond)
+				time.Sleep(1 * time.Microsecond)
 			}
 		}
 	}()
 
 	wg.Add(1)
-	go func(){
+	go func() {
 		defer wg.Done()
 		for {
-			select{
+			select {
 			case <-ctx.Done():
 				return
 			default:
@@ -109,11 +114,11 @@ func (c *Client) StartCall(serverURL string) {
 					cancel()
 					return
 				}
-				decMsg, err := enc.Decrypt(msg)
-				if err != nil {
-					c.log.Error("Decrypt msg error: ", zap.Error(err))
+				pcmData := make([]int16, len(msg)/2)
+				for i := 0; i < len(pcmData); i++ {
+					pcmData[i] = int16(msg[i*2]) | (int16(msg[i*2+1]) << 8)
 				}
-				c.as.Queues.Push(decMsg, c.as.Queues.AQ)
+				c.as.Queues.Push(pcmData, c.as.Queues.AQ)
 			}
 		}
 	}()

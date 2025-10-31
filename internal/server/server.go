@@ -10,12 +10,12 @@ import (
 	"github.com/gorilla/websocket"
 
 	"Viz/internal/audio"
-	"Viz/internal/encryptor"
+	//"Viz/internal/encryptor"
 )
 
 func Setup(log *zap.Logger) (*http.Server, error) {
 	upgrader := &websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool{
+		CheckOrigin: func(r *http.Request) bool {
 			return true
 		},
 	}
@@ -26,11 +26,11 @@ func Setup(log *zap.Logger) (*http.Server, error) {
 	}
 
 	srv := &http.Server{
-		Handler: mux,
-		Addr: ":8443",
-		ReadTimeout: 28*time.Second,
-		WriteTimeout: 28*time.Second,
-		IdleTimeout: 28*time.Second,
+		Handler:      mux,
+		Addr:         ":8443",
+		ReadTimeout:  28 * time.Second,
+		WriteTimeout: 28 * time.Second,
+		IdleTimeout:  28 * time.Second,
 	}
 
 	return srv, nil
@@ -45,13 +45,13 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 		return mux, err
 	}
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request){
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("use 'url/ws'"))
 	})
 
-	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request){
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		log.Info("WS handshake starting")
-		
+
 		conn, err := upg.Upgrade(w, r, nil)
 		if err != nil {
 			log.Error("WS upgrade failed: ", zap.Error(err))
@@ -59,28 +59,33 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 		}
 		defer conn.Close()
 		log.Info("WS connection established")
-
-		enc, err := encryptor.Setup(log, conn)
-		if err != nil {
-			log.Fatal("Failed to create encryptor: ", zap.Error(err))
-		}
-
+		/*
+			enc, err := encryptor.Setup(log, conn)
+			if err != nil {
+				log.Fatal("Failed to create encryptor: ", zap.Error(err))
+			}
+		*/
 		go as.RecordStream()
 		go as.PlayStream()
-		
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
 		var wg sync.WaitGroup
 
 		wg.Add(1)
-		go func(){
+		go func() {
 			defer wg.Done()
 			for {
 				select {
 				case voiceChunk := <-as.VoiceChan:
-					encChunk := enc.Encrypt(voiceChunk)
-					if err := conn.WriteMessage(websocket.BinaryMessage, encChunk); err != nil {
+					byteData := make([]byte, len(voiceChunk)*2)
+					for i, sample := range voiceChunk {
+						byteData[i*2] = byte(sample & 0xFF)
+						byteData[i*2+1] = byte((sample >> 8) & 0xFF)
+					}
+
+					if err := conn.WriteMessage(websocket.BinaryMessage, byteData); err != nil {
 						log.Error("WS server write failed: ", zap.Error(err))
 						cancel()
 						return
@@ -88,13 +93,13 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 				case <-ctx.Done():
 					return
 				default:
-					time.Sleep(1*time.Millisecond)
+					time.Sleep(1 * time.Millisecond)
 				}
 			}
 		}()
 
 		wg.Add(1)
-		go func(){
+		go func() {
 			defer wg.Done()
 			for {
 				select {
@@ -107,12 +112,18 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 						cancel()
 						return
 					}
-					decMsg, err := enc.Decrypt(msg)
-					if err != nil {
-						log.Error("Decrypt message error: ", zap.Error(err))
+
+					if len(msg)%2 != 0 {
+						log.Warn("Invalid PCM data length")
 						continue
 					}
-					as.Queues.Push(decMsg, as.Queues.AQ)
+
+					pcmData := make([]int16, len(msg)/2)
+					for i := 0; i < len(pcmData); i++ {
+						pcmData[i] = int16(msg[i*2]) | (int16(msg[i*2+1]) << 8)
+					}
+
+					as.Queues.Push(pcmData, as.Queues.AQ)
 				}
 			}
 		}()
