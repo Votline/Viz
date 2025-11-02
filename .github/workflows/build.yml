@@ -7,10 +7,11 @@ jobs:
       - uses: actions/checkout@v3
       
       - name: Install vcpkg dependencies
+        shell: bash
         run: |
           git clone https://github.com/Microsoft/vcpkg.git
-          .\vcpkg\bootstrap-vcpkg.bat
-          .\vcpkg\vcpkg install portaudio opus
+          ./vcpkg/bootstrap-vcpkg.bat
+          ./vcpkg/vcpkg install portaudio opus
 
       - name: Setup Go
         uses: actions/setup-go@v4
@@ -18,11 +19,11 @@ jobs:
           go-version: '1.24.5'
 
       - name: Build
-        shell: cmd
+        shell: bash
         run: |
-          set CGO_ENABLED=1
-          set CGO_CFLAGS=-I.\vcpkg\installed\x64-windows\include
-          set CGO_LDFLAGS=-L.\vcpkg\installed\x64-windows\lib -lportaudio -lopus
+          export CGO_ENABLED=1
+          export CGO_CFLAGS="-I./vcpkg/installed/x64-windows/include"
+          export CGO_LDFLAGS="-L./vcpkg/installed/x64-windows/lib -lportaudio -lopus"
           go build -o viz.exe main.go
 
       - name: Upload Artifact
