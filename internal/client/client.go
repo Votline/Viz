@@ -2,7 +2,6 @@ package client
 
 import (
 	"sync"
-	"time"
 	"context"
 	"net/url"
 
@@ -99,8 +98,6 @@ func (c *Client) StartCall(serverURL string) {
 					}
 					batchBuffer = batchBuffer[:0]
 				}
-			default:
-				time.Sleep(1 * time.Microsecond)
 			}
 		}
 	}()

@@ -3,7 +3,6 @@ package audio
 import (
 	"sync"
 	"time"
-	"runtime"
 
 	"go.uber.org/zap"
 	"github.com/gordonklaus/portaudio"
@@ -57,7 +56,7 @@ func NewAS(log *zap.Logger) (*AudioStream, error) {
 	return &AudioStream{
 		log:        log,
 		dur:        time.Duration(dur),
-		waitTime:   1,
+		waitTime:   5,
 		
 		channels:   chs,
 		bitrate:    btr,
@@ -149,6 +148,7 @@ func (as *AudioStream) RecordStream() {
 			as.log.Warn("Failed to copy full chunk",
 				zap.Int("copied", copied),
 				zap.Int("required", samplesPerMs))
+			time.Sleep(as.waitTime * time.Millisecond)
 		}
 	}
 }
@@ -172,6 +172,8 @@ func (as *AudioStream) PlayStream() {
 					zap.Int("pcm", len(pcm)))
 
 				as.Queues.Push(pcm, as.Queues.pQ)
+			} else {
+				time.Sleep(as.waitTime * time.Millisecond)
 			}
 		}
 	}()
@@ -186,7 +188,7 @@ func (as *AudioStream) PlayStream() {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	ringBufSize := int(as.sampleRate * 0.5)
+	ringBufSize := int(as.sampleRate * 1.0)
 	as.playAb.resetPCM(ringBufSize)
 	go func(){
 		for {
@@ -200,7 +202,7 @@ func (as *AudioStream) PlayStream() {
 						zap.Int("totalSamples", len(pcm)))
 				}
 			} else {
-				runtime.Gosched()
+				time.Sleep(as.waitTime * time.Millisecond)
 			}
 		}
 	}()

@@ -96,8 +96,6 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 					}
 				case <-ctx.Done():
 					return
-				default:
-					time.Sleep(1 * time.Millisecond)
 				}
 			}
 		}()
