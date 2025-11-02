@@ -18,7 +18,9 @@ jobs:
           go-version: '1.24.5'
 
       - name: Build
+        shell: cmd
         run: |
+          set CGO_ENABLED=1
           set CGO_CFLAGS=-I.\vcpkg\installed\x64-windows\include
           set CGO_LDFLAGS=-L.\vcpkg\installed\x64-windows\lib -lportaudio -lopus
           go build -o viz.exe main.go
