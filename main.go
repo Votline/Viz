@@ -76,18 +76,16 @@ func main() {
 		log.Fatal("Couldn't create server: ", zap.Error(err))
 	}
 
-	clt, err := client.NewClient(log)
-	if err != nil {
-		log.Fatal("Couldn't create client: ", zap.Error(err))
-	}
-
-	if err := srv.ListenAndServe(); err != nil && (choice == "sevrer" || choice == "srv") {
+	if err := srv.ListenAndServe(); err != nil && (choice == "server" || choice == "srv") {
 		log.Fatal("HTTPS server failed: ", zap.Error(err))
 	}
 
 	if choice == "client" || choice == "clt" {
 		var url string
 		fmt.Scanln(&url)
-		clt.StartCall(url)
+		if err := client.StartCall(url, log); err != nil {
+			log.Fatal("Error in StartCall client", zap.Error(err))
+			return
+		}
 	}
 }

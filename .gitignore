@@ -1,6 +1,1 @@
-appimagetool-x86_64.AppImage
-build.sh
-viz
-Viz-x86_64.AppImage
-Viz.AppDir/
-
+build/
