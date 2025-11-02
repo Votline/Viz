@@ -1,47 +1,33 @@
-name: Build Windows Executable
+name: Build Windows Binary
 
-on: [push]
+on:
+  push:
+    tags: ['v*']
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
+    - uses: actions/checkout@v4
+    
     - name: Setup Go
       uses: actions/setup-go@v4
       with:
-        go-version: '1.24.5'
-
-    - name: Download Pre-built Libraries
-      shell: bash
-      run: |
-        # Скачиваем готовые библиотеки PortAudio
-        curl -L -o portaudio.zip "https://github.com/spatialaudio/portaudio-binaries/archive/refs/heads/master.zip"
-        7z x portaudio.zip
-        mkdir -p portaudio
-        cp -r portaudio-binaries-master/Windows/x64/* portaudio/
+        go-version: '1.21'
         
-        # Скачиваем Opus
-        curl -L -o opus.zip "https://ftp.osuosl.org/pub/xiph/releases/opus/opus-windows-1.4.zip"
-        7z x opus.zip
-        mkdir -p opus
-        cp -r opus-windows-1.4/* opus/
-
-    - name: Build
-      shell: bash
+    - name: Install mingw-w64
       run: |
-        export CGO_ENABLED=1
-        export CGO_CFLAGS="-I$PWD/portaudio/include -I$PWD/opus/include"
-        export CGO_LDFLAGS="-L$PWD/portaudio/x64 -L$PWD/opus/lib -lportaudio -lopus"
+        sudo apt-get update
+        sudo apt-get install -y mingw-w64
         
-        # Форсируем сборку без pkg-config
-        go build -tags=static -o viz.exe main.go
-
-    - name: Upload Artifact
+    - name: Build dependencies
+      run: |
+        chmod +x build_windows.sh
+        ./build_windows.sh
+        
+    - name: Upload binary
       uses: actions/upload-artifact@v4
       with:
-        name: viz-windows
-        path: viz.exe
+        name: windows-app
+        path: app.exe
