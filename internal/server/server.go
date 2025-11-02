@@ -11,7 +11,7 @@ import (
 
 	"Viz/internal/audio"
 	"Viz/internal/batch"
-	//"Viz/internal/encryptor"
+	"Viz/internal/encryptor"
 )
 
 func Setup(log *zap.Logger) (*http.Server, error) {
@@ -60,19 +60,19 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 		}
 		defer conn.Close()
 		log.Info("WS connection established")
-		/*
-			enc, err := encryptor.Setup(log, conn)
-			if err != nil {
-				log.Fatal("Failed to create encryptor: ", zap.Error(err))
-			}
-		*/
+		
+		enc, err := encryptor.Setup(log, conn)
+		if err != nil {
+			log.Fatal("Failed to create encryptor: ", zap.Error(err))
+		}
+	
 		go as.RecordStream()
 		go as.PlayStream()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		const batchSize = 3
+		const batchSize = 8
 		var wg sync.WaitGroup
 
 		wg.Add(1)
@@ -82,7 +82,8 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 			for {
 				select {
 				case voiceChunk := <-as.VoiceChan:
-					batchBuffer = append(batchBuffer, voiceChunk)
+					encChunk := enc.Encrypt(voiceChunk)
+					batchBuffer = append(batchBuffer, encChunk)
 
 					if len(batchBuffer) == batchSize {
 						packedBatch := batch.PackBatch(batchBuffer)
@@ -123,7 +124,12 @@ func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
 					}
 
 					for _, frame := range frames {
-						as.Queues.Push(frame, as.Queues.AQ)
+						decFrame, err := enc.Decrypt(frame)
+						if err != nil {
+							log.Error("Failed to decrypt message", zap.Error(err))
+							continue
+						}
+						as.Queues.Push(decFrame, as.Queues.AQ)
 					}
 				}
 			}

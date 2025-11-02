@@ -11,7 +11,7 @@ import (
 
 	"Viz/internal/audio"
 	"Viz/internal/batch"
-	// "Viz/internal/encryptor"
+	"Viz/internal/encryptor"
 )
 
 type Client struct {
@@ -62,12 +62,12 @@ func (c *Client) connect(serverURL string) error {
 
 func (c *Client) StartCall(serverURL string) {
 	c.connect(serverURL)
-	/*
-		enc, err := encryptor.Setup(c.log, c.conn)
-		if err != nil {
-			c.log.Error("Failed to create encryptor: ", zap.Error(err))
-		}
-	*/
+	
+	enc, err := encryptor.Setup(c.log, c.conn)
+	if err != nil {
+		c.log.Error("Failed to create encryptor: ", zap.Error(err))
+	}
+	
 
 	go c.as.RecordStream()
 	go c.as.PlayStream()
@@ -75,7 +75,7 @@ func (c *Client) StartCall(serverURL string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	const batchSize = 3
+	const batchSize = 8
 	var wg sync.WaitGroup
 
 	wg.Add(1)
@@ -87,7 +87,8 @@ func (c *Client) StartCall(serverURL string) {
 			case <-ctx.Done():
 				return
 			case voiceChunk := <-c.as.VoiceChan:
-				batchBuffer = append(batchBuffer, voiceChunk)
+				encChunk := enc.Encrypt(voiceChunk)
+				batchBuffer = append(batchBuffer, encChunk)
 				
 				if len(batchBuffer) == batchSize {
 					packedBatch := batch.PackBatch(batchBuffer)
@@ -126,7 +127,12 @@ func (c *Client) StartCall(serverURL string) {
 				}
 
 				for _, frame := range frames {
-					c.as.Queues.Push(frame, c.as.Queues.AQ)
+					decFrame, err := enc.Decrypt(frame)
+					if err != nil {
+						c.log.Error("Failed to decrypt message", zap.Error(err))
+						continue
+					}
+					c.as.Queues.Push(decFrame, c.as.Queues.AQ)
 				}
 			}
 		}

@@ -3,6 +3,7 @@ package audio
 import (
 	"sync"
 	"time"
+	"runtime"
 
 	"go.uber.org/zap"
 	"github.com/gordonklaus/portaudio"
@@ -38,8 +39,8 @@ func NewAS(log *zap.Logger) (*AudioStream, error) {
 	playAb := newAB(1.0, log)
 	recordAb := newAB(1.0, log)
 	chs := 1
-	dur := 100
-	btr := 32000
+	dur := 40
+	btr := 64000
 	smpR := 48000.0
 	bufS := int(smpR * float64(dur) / 1000) * chs
 	playCmpr, err := compressor.NewCmpr(btr, int(smpR), chs, dur, log)
@@ -83,14 +84,9 @@ func (as *AudioStream) RecordStream() {
 		return
 	}
 
+	ringBufSize := int(as.sampleRate * 1.0)
+	as.recordAb.resetPCM(ringBufSize)
 	samplesPerMs := int(as.sampleRate * float64(as.dur) / 1000) * as.channels
-
-	as.log.Debug("Starting recording",
-		zap.Int("durationMs", int(as.dur)),
-		zap.Int("samples", samplesPerMs),
-		zap.Float64("sampleRate", as.sampleRate))
-
-	as.recordAb.resetPCM(samplesPerMs)
 
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
@@ -118,50 +114,41 @@ func (as *AudioStream) RecordStream() {
 		return
 	}
 
-	cleanupTicker := time.NewTicker(30 * time.Second)
-	for {
-		as.recordAb.resetPCM(samplesPerMs)
-
-		startTime := time.Now()
-		for !as.recordAb.recorded() {
-			if time.Since(startTime) > as.dur*time.Millisecond*2 {
-				as.log.Warn("Record timeout")
-				as.recordAb.stopRecording()
-				break
-			}
-			as.log.Debug("Waiting for buffer")
-			time.Sleep(as.waitTime*time.Millisecond)
-		}
-		as.recordAb.stopRecording()
-
-		as.log.Debug("Buffer filled, compressing...",
-			zap.Int("samples", len(as.playAb.data())))
-
-		pcmData := as.recordAb.data()
-		if len(pcmData) == 0 {
-			as.log.Warn("Empty PCM data")
+	ticker := time.NewTicker(as.dur * time.Millisecond)
+	for range ticker.C {
+		available := as.recordAb.available()
+		if available < samplesPerMs {
+			as.log.Warn("Not enough data in ring buffer",
+				zap.Int("available", available),
+				zap.Int("required", samplesPerMs))
 			continue
 		}
 
-		zstdChunk, err := as.recordCmpr.CompressVoice(pcmData)
-		if err != nil {
-			as.log.Error("Compress voice error: ", zap.Error(err))
-			continue
-		}
+		chunk := make([]int16, samplesPerMs)
+		copied := as.recordAb.copyChunk(chunk)
 
-		as.log.Debug("Compressing completed",
-			zap.Int("inputSamples", len(pcmData)),
-			zap.Int("outputBytes", len(zstdChunk)))
+		if copied == samplesPerMs {
+			go func(pcmData []int16){
+				if len(pcmData) == 0 {
+					as.log.Warn("Empty PCM data")
+					return
+				}
 
-		select{
-		case as.VoiceChan <-zstdChunk:
-		case <-time.After(50 * time.Millisecond):
-			as.log.Warn("Channel full, dropping packet")
-		}
-		select{
-		case <-cleanupTicker.C:
-			as.recordAb.cleanup()
-		default:
+				zstdChunk, err := as.recordCmpr.CompressVoice(pcmData)
+				if err != nil {
+					as.log.Error("Compress voice error: ", zap.Error(err))
+					return
+				}
+
+				as.log.Debug("Compressing completed",
+					zap.Int("inputSamples", len(pcmData)),
+					zap.Int("outputBytes", len(zstdChunk)))
+				as.VoiceChan <-zstdChunk
+			}(chunk)
+		} else {
+			as.log.Warn("Failed to copy full chunk",
+				zap.Int("copied", copied),
+				zap.Int("required", samplesPerMs))
 		}
 	}
 }
@@ -185,10 +172,6 @@ func (as *AudioStream) PlayStream() {
 					zap.Int("pcm", len(pcm)))
 
 				as.Queues.Push(pcm, as.Queues.pQ)
-
-				as.log.Debug("Decoded and queued PCM",
-					zap.Int("pcmSamples", len(pcm)),
-					zap.Int("queueSize", as.Queues.length(as.Queues.pQ)))
 			}
 		}
 	}()
@@ -198,6 +181,29 @@ func (as *AudioStream) PlayStream() {
 		as.log.Error("Couldn't get default output device")
 		return
 	}
+	
+	for as.Queues.length(as.Queues.pQ) < 3 {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	ringBufSize := int(as.sampleRate * 0.5)
+	as.playAb.resetPCM(ringBufSize)
+	go func(){
+		for {
+			if as.Queues.length(as.Queues.pQ) > 0 {
+				pcm, ok := as.Queues.pop(as.Queues.pQ).([]int16)
+				if pcm != nil && ok{
+					as.playAb.appendPCM(pcm)
+
+					as.log.Debug("Chunk playback completed", 
+						zap.Int("samplesPlayed", as.playAb.getReadPos()),
+						zap.Int("totalSamples", len(pcm)))
+				}
+			} else {
+				runtime.Gosched()
+			}
+		}
+	}()
 
 	stream, err := portaudio.OpenStream(
 		portaudio.StreamParameters{
@@ -227,34 +233,6 @@ func (as *AudioStream) PlayStream() {
 
 	as.log.Debug("Prebuffer filled, starting playback")
 
-	for {
-		if as.Queues.length(as.Queues.pQ) > 3 {
-			pcm, ok := as.Queues.pop(as.Queues.pQ).([]int16)
-			if pcm != nil && ok{
-				as.playAb.setPCM(pcm)
-				as.playAb.resetPlay()
-
-				startTime := time.Now()
-				samplesToPlay := len(pcm)
-
-				for as.playAb.getReadPos() < samplesToPlay-(samplesToPlay/10) {
-					if time.Since(startTime) > as.dur*time.Millisecond*2 {
-						as.log.Warn("Play timeout")
-						break
-					}
-					time.Sleep(as.waitTime * time.Millisecond)
-
-					if as.playAb.getReadPos() >= len(pcm) {
-						break
-					}
-				}
-				as.log.Debug("Chunk playback completed", 
-					zap.Int("samplesPlayed", as.playAb.getReadPos()),
-					zap.Int("totalSamples", samplesToPlay))
-			}
-		} else {
-			as.log.Debug("Waiting for pcm queue...")
-			time.Sleep(as.waitTime * time.Millisecond)
-		}
-	}
+	select{}
 }
+
