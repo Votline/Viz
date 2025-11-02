@@ -191,7 +191,7 @@ This project is distributed under the **MIT License**. See the [LICENSE](LICENSE
 |---------|---------|---------|
 | [github.com/gordonklaus/portaudio](https://github.com/gordonklaus/portaudio) | v0.0.0-20250206071425-98a94950218b | Audio I/O |
 | [github.com/gorilla/websocket](https://github.com/gorilla/websocket) | v1.5.3 | WebSocket connections |
-| [github.com/jj11hh/opus](https://github.com/jj11hh/opus) | v1.0.1 | OPUS audio codec |
+| [github.com/hraban/opus](https://github.com/hraban/opus) | v1.0.1 | OPUS audio codec |
 | [go.uber.org/zap](https://go.uber.org/zap) | v1.27.0 | Structured logging |
 | [github.com/klauspost/compress](https://github.com/klauspost/compress) | v1.18.1 | Zstandard compression |
 | [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) | v0.43.0 | Encryption (NaCl Box) |
@@ -395,7 +395,7 @@ ssh -R 80:localhost:8443 localhost.run
 |-------|--------|------------|
 | [github.com/gordonklaus/portaudio](https://github.com/gordonklaus/portaudio) | v0.0.0-20250206071425-98a94950218b | Аудио ввод/вывод |
 | [github.com/gorilla/websocket](https://github.com/gorilla/websocket) | v1.5.3 | WebSocket соединения |
-| [github.com/jj11hh/opus](https://github.com/jj11hh/opus) | v1.0.1 | OPUS аудио кодека |
+| [github.com/hraban/opus](https://github.com/hraban/opus) | v1.0.1 | OPUS аудио кодека |
 | [go.uber.org/zap](https://go.uber.org/zap) | v1.27.0 | Структурированное логирование |
 | [github.com/klauspost/compress](https://github.com/klauspost/compress) | v1.18.1 | Zstandard сжатие |
 | [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) | v0.43.0 | Шифрование (NaCl Box) |
