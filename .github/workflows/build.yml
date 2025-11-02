@@ -1,33 +1,44 @@
-name: Build Windows with vcpkg
+name: Build Windows Executable
 
 on: [push]
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
     
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Install dependencies with vcpkg
-      shell: cmd
-      run: |
-        git clone https://github.com/Microsoft/vcpkg.git
-        .\vcpkg\bootstrap-vcpkg.bat
-        .\vcpkg\vcpkg install portaudio opus --triplet x64-windows
+    - name: Checkout code
+      uses: actions/checkout@v4
 
     - name: Setup Go
       uses: actions/setup-go@v4
       with:
         go-version: '1.24.5'
 
-    - name: Build with vcpkg libraries
-      shell: cmd
+    - name: Download Pre-built Libraries
+      shell: bash
       run: |
-        set CGO_ENABLED=1
-        set CGO_CFLAGS=-I.\vcpkg\installed\x64-windows\include
-        set CGO_LDFLAGS=-L.\vcpkg\installed\x64-windows\lib -lportaudio -lopus
-        go build -o viz.exe main.go
+        # Скачиваем готовые библиотеки PortAudio
+        curl -L -o portaudio.zip "https://github.com/spatialaudio/portaudio-binaries/archive/refs/heads/master.zip"
+        7z x portaudio.zip
+        mkdir -p portaudio
+        cp -r portaudio-binaries-master/Windows/x64/* portaudio/
+        
+        # Скачиваем Opus
+        curl -L -o opus.zip "https://ftp.osuosl.org/pub/xiph/releases/opus/opus-windows-1.4.zip"
+        7z x opus.zip
+        mkdir -p opus
+        cp -r opus-windows-1.4/* opus/
+
+    - name: Build
+      shell: bash
+      run: |
+        export CGO_ENABLED=1
+        export CGO_CFLAGS="-I$PWD/portaudio/include -I$PWD/opus/include"
+        export CGO_LDFLAGS="-L$PWD/portaudio/x64 -L$PWD/opus/lib -lportaudio -lopus"
+        
+        # Форсируем сборку без pkg-config
+        go build -tags=static -o viz.exe main.go
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
