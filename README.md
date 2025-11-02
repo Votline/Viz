@@ -15,7 +15,7 @@
 - 🔧 **Server Flexibility**: Any tunneling services (ngrok, cloudflare, localhost.run)
 - 🎵 **High-Quality Audio**: OPUS codec with 32 kbps bitrate
 - 📦 **Aggressive Compression**: OPUS + Zstandard for traffic minimization
-- ⏱️ **Optimized Chunks**: 300ms packets to avoid tunnel bans
+- ⏱️ **Optimized Chunks**: 40ms audio chunks with 320ms batch delay for tunneling services
 - 🔄 **Bidirectional Communication**: Simultaneous recording and playback
 - 🛡️ **Thread-Safe**: Safe multi-threaded audio processing
 - 📊 **Detailed Logging**: Zap integration for monitoring
@@ -55,13 +55,45 @@
 - **AudioStream**: Audio flow management (recording/playback)
 - **Buffer**: Ring buffer for audio data with thread-safe operations
 - **Compressor**: Dual compression (OPUS → Zstandard) for traffic optimization
+- **Batch**: Batching system that packs multiple audio frames (8 frames per batch) into single packets
 - **Queue**: Queue for buffering incoming audio packets
 - **Server**: WebSocket server for accepting connections
 - **Client**: WebSocket client for connecting to server
 
 ## 🚀 Quick Start
 
-### Build and Run
+### Using Pre-built Releases (Recommended)
+
+If you download pre-built releases from [GitHub Releases](https://github.com/Votline/Viz/releases), **PortAudio** and **Opus** libraries are already embedded in the binary. You don't need to install any additional dependencies - just download and use the binary.
+
+### Building from Source
+
+If you want to build the application yourself, you need to install system dependencies first:
+
+#### Required System Dependencies:
+
+- **PortAudio**: Cross-platform audio I/O library
+  - Official website: [http://www.portaudio.com/](http://www.portaudio.com/)
+  - GitHub: [https://github.com/PortAudio/portaudio](https://github.com/PortAudio/portaudio)
+  - Installation:
+    - **Linux**: 
+      - `sudo apt-get install portaudio19-dev` (Debian/Ubuntu)
+      - `sudo yum install portaudio-devel` (Fedora/RHEL)
+      - `sudo pacman -S portaudio` (Arch Linux)
+    - **macOS**: `brew install portaudio`
+    - **Windows**: Download from [PortAudio downloads](http://files.portaudio.com/download.html)
+
+- **Opus**: High-quality audio codec library
+  - Official website: [https://opus-codec.org/](https://opus-codec.org/)
+  - Installation:
+    - **Linux**: 
+      - `sudo apt-get install libopus-dev` (Debian/Ubuntu)
+      - `sudo yum install opus-devel` (Fedora/RHEL)
+      - `sudo pacman -S opus` (Arch Linux)
+    - **macOS**: `brew install opus`
+    - **Windows**: Use pre-built libraries from [Opus downloads](https://opus-codec.org/downloads/)
+
+#### Build Steps:
 
 1. **Clone the repository:**
 ```bash
@@ -69,7 +101,7 @@ git clone https://github.com/Votline/Viz
 cd Viz
 ```
 
-2. **Install dependencies:**
+2. **Install Go dependencies:**
 ```bash
 go mod download
 ```
@@ -112,10 +144,10 @@ ssh -R 80:localhost:8443 localhost.run
 - **Channels**: Mono (1 channel)
 - **Bitrate**: 32 kbps
 - **Buffer Size**: 2048 samples
-- **Chunk Duration**: 300 ms (optimized for tunnels)
+- **Chunk Duration**: 40 ms (optimal for OPUS codec, supports 2ms-120ms range)
 
 ### Tunnel Optimization:
-- **Large Chunks**: 300ms instead of standard 20ms to reduce request frequency
+- **Batching**: 8 frames × 40ms = 320ms delay (optimized for tunneling services)
 - **Dual Compression**: OPUS + Zstandard to minimize packet size
 - **Rare Requests**: Prevents bans from tunneling services
 
@@ -128,8 +160,10 @@ ssh -R 80:localhost:8443 localhost.run
 ## 🔧 Technical Details
 
 ### Audio Processing:
-1. **Recording**: PortAudio → Float32 → Int16 → OPUS → Zstandard
-2. **Playback**: Zstandard → OPUS → Int16 → Float32 → PortAudio
+1. **Recording**: PortAudio → Float32 → Int16 → OPUS → Zstandard → (E2EE encryption at network layer, not in audio processing chain)
+2. **Playback**: (E2EE decryption at network layer) → Zstandard → OPUS → Int16 → Float32 → PortAudio
+
+**Note**: End-to-End Encryption (E2EE) is applied at the network transport layer after audio compression, not within the audio processing pipeline itself.
 
 ### Compression (tunnel optimization):
 - **OPUS**: Audio codec for voice communication (32 kbps)
@@ -137,10 +171,14 @@ ssh -R 80:localhost:8443 localhost.run
 - **Result**: Maximum compression to avoid tunnel bans
 
 ### Buffering:
-- Ring buffers for recording and playback
-- Thread-safe operations with mutexes
-- Automatic overflow management
-- Optimized 300ms chunks for tunneling services
+- **Ring Buffers**: Circular buffers used for both recording and playback operations
+  - Thread-safe operations with mutexes
+  - Automatic overflow management
+  - Separate read/write positions for efficient data flow
+- **Batching**: Multiple compressed audio frames (8 frames × 40ms = 320ms total delay) are packed into single packets
+  - Reduces WebSocket overhead
+  - Creates ~320ms delay optimized for tunneling services (avoids bans)
+- **Chunks**: 40ms audio chunks (optimal value for OPUS codec, which supports 2ms-120ms range)
 
 ## 📄 Licenses
 
@@ -156,12 +194,14 @@ This project is distributed under the **MIT License**. See the [LICENSE](LICENSE
 | [github.com/jj11hh/opus](https://github.com/jj11hh/opus) | v1.0.1 | OPUS audio codec |
 | [go.uber.org/zap](https://go.uber.org/zap) | v1.27.0 | Structured logging |
 | [github.com/klauspost/compress](https://github.com/klauspost/compress) | v1.18.1 | Zstandard compression |
+| [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) | v0.43.0 | Encryption (NaCl Box) |
 
 - **PortAudio**: MIT License - see [licenses/gordonklaus-portaudio_LICENSE.txt](licenses/gordonklaus-portaudio_LICENSE.txt)
 - **Gorilla WebSocket**: BSD 2-Clause License - see [licenses/gorilla-websocket_LICENSE.txt](licenses/gorilla-websocket_LICENSE.txt)
-- **Go Opus**: MIT License - see [licenses/go-opus_LICENSE.txt](licenses/go-opus_LICENSE.txt)
+- **Opus**: MIT License - see [licenses/hraban-opus_LICENSE.txt](licenses/hraban-opus_LICENSE.txt)
 - **Uber Zap**: MIT License - see [licenses/uber-zap_LICENSE.txt](licenses/uber-zap_LICENSE.txt)
 - **Klauspost Compress**: Apache 2.0 License - see [licenses/klauspost-compress_LICENSE.txt](licenses/klauspost-compress_LICENSE.txt)
+- **Go Crypto (x/crypto)**: BSD 3-Clause License - see [licenses/x-crypto-nacl-box_LICENSE.txt](licenses/x-crypto-nacl-box_LICENSE.txt)
 
 ### Go Opus Authors
 See [AUTHORS_opus](AUTHORS_opus) file for the list of Go Opus library authors.
@@ -179,7 +219,7 @@ See [AUTHORS_opus](AUTHORS_opus) file for the list of Go Opus library authors.
 - 🔧 **Гибкость серверов**: Любые туннелирующие сервисы (ngrok, cloudflare, localhost.run)
 - 🎵 **Высококачественное аудио**: OPUS кодека с битрейтом 32 кбит/с
 - 📦 **Агрессивное сжатие**: OPUS + Zstandard для минимизации трафика
-- ⏱️ **Оптимизированные чанки**: 300ms пакеты для избежания банов туннелей
+- ⏱️ **Оптимизированные чанки**: 40ms аудио чанки с задержкой батчей 320ms для туннелирующих сервисов
 - 🔄 **Двунаправленная связь**: Одновременная запись и воспроизведение
 - 🛡️ **Thread-safe**: Безопасная многопоточная обработка аудио
 - 📊 **Подробное логирование**: Интеграция с Zap для мониторинга
@@ -219,13 +259,45 @@ See [AUTHORS_opus](AUTHORS_opus) file for the list of Go Opus library authors.
 - **AudioStream**: Управление аудио потоками (запись/воспроизведение)
 - **Buffer**: Кольцевой буфер для аудио данных с thread-safe операциями
 - **Compressor**: Двойное сжатие (OPUS → Zstandard) для оптимизации трафика
+- **Batch**: Система батчей, упаковывающая несколько аудио фреймов (8 фреймов на батч) в один пакет
 - **Queue**: Очередь для буферизации входящих аудио пакетов
 - **Server**: WebSocket сервер для приема соединений
 - **Client**: WebSocket клиент для подключения к серверу
 
 ## 🚀 Быстрый старт
 
-### Сборка и запуск
+### Использование готовых релизов (Рекомендуется)
+
+Если вы скачиваете готовые релизы с [GitHub Releases](https://github.com/Votline/Viz/releases), то библиотеки **PortAudio** и **Opus** уже встроены в бинарный файл. Вам не нужно устанавливать никаких дополнительных зависимостей - просто скачайте и используйте бинарник.
+
+### Сборка из исходного кода
+
+Если вы хотите собрать приложение самостоятельно, вам нужно сначала установить системные зависимости:
+
+#### Требуемые системные зависимости:
+
+- **PortAudio**: Кроссплатформенная библиотека для работы с аудио вводом/выводом
+  - Официальный сайт: [http://www.portaudio.com/](http://www.portaudio.com/)
+  - GitHub: [https://github.com/PortAudio/portaudio](https://github.com/PortAudio/portaudio)
+  - Установка:
+    - **Linux**: 
+      - `sudo apt-get install portaudio19-dev` (Debian/Ubuntu)
+      - `sudo yum install portaudio-devel` (Fedora/RHEL)
+      - `sudo pacman -S portaudio` (Arch Linux)
+    - **macOS**: `brew install portaudio`
+    - **Windows**: Скачайте с [PortAudio downloads](http://files.portaudio.com/download.html)
+
+- **Opus**: Высококачественная библиотека аудио кодека
+  - Официальный сайт: [https://opus-codec.org/](https://opus-codec.org/)
+  - Установка:
+    - **Linux**: 
+      - `sudo apt-get install libopus-dev` (Debian/Ubuntu)
+      - `sudo yum install opus-devel` (Fedora/RHEL)
+      - `sudo pacman -S opus` (Arch Linux)
+    - **macOS**: `brew install opus`
+    - **Windows**: Используйте готовые библиотеки с [Opus downloads](https://opus-codec.org/downloads/)
+
+#### Шаги сборки:
 
 1. **Клонирование репозитория:**
 ```bash
@@ -233,7 +305,7 @@ git clone https://github.com/Votline/Viz
 cd Viz
 ```
 
-2. **Установка зависимостей:**
+2. **Установка зависимостей Go:**
 ```bash
 go mod download
 ```
@@ -276,10 +348,10 @@ ssh -R 80:localhost:8443 localhost.run
 - **Channels**: Моно (1 канал)
 - **Bitrate**: 32 кбит/с
 - **Buffer Size**: 2048 сэмплов
-- **Chunk Duration**: 300 мс (оптимизировано для туннелей)
+- **Chunk Duration**: 40 мс (оптимальное значение для OPUS кодека, поддерживает диапазон 2мс-120мс)
 
 ### Оптимизация для туннелей:
-- **Большие чанки**: 300ms вместо стандартных 20ms для снижения частоты запросов
+- **Батчинг**: 8 фреймов × 40мс = 320мс задержка (оптимизировано для туннелирующих сервисов)
 - **Двойное сжатие**: OPUS + Zstandard для минимизации размера пакетов
 - **Редкие запросы**: Предотвращение банов от туннелирующих сервисов
 
@@ -292,8 +364,10 @@ ssh -R 80:localhost:8443 localhost.run
 ## 🔧 Технические детали
 
 ### Аудио обработка:
-1. **Запись**: PortAudio → Float32 → Int16 → OPUS → Zstandard
-2. **Воспроизведение**: Zstandard → OPUS → Int16 → Float32 → PortAudio
+1. **Запись**: PortAudio → Float32 → Int16 → OPUS → Zstandard → (E2EE шифрование на сетевом уровне, не в цепочке обработки аудио)
+2. **Воспроизведение**: (E2EE расшифровка на сетевом уровне) → Zstandard → OPUS → Int16 → Float32 → PortAudio
+
+**Примечание**: End-to-End Encryption (E2EE) применяется на уровне сетевого транспорта после сжатия аудио, а не внутри самой цепочки обработки аудио.
 
 ### Сжатие (оптимизация для туннелей):
 - **OPUS**: Аудио кодека для голосовой связи (32 кбит/с)
@@ -301,10 +375,14 @@ ssh -R 80:localhost:8443 localhost.run
 - **Результат**: Максимальное сжатие для избежания банов туннелей
 
 ### Буферизация:
-- Кольцевые буферы для записи и воспроизведения
-- Thread-safe операции с мьютексами
-- Автоматическое управление переполнением
-- Оптимизированные 300ms чанки для туннелирующих сервисов
+- **Кольцевые буферы**: Круговые буферы, используемые для операций записи и воспроизведения
+  - Thread-safe операции с мьютексами
+  - Автоматическое управление переполнением
+  - Отдельные позиции чтения/записи для эффективного потока данных
+- **Батчи**: Несколько сжатых аудио фреймов (8 фреймов × 40мс = 320мс общая задержка) упаковываются в один пакет
+  - Снижает накладные расходы WebSocket
+  - Создаёт задержку ~320мс, оптимизированную для туннелирующих сервисов (предотвращает баны)
+- **Чанки**: 40мс аудио чанки (оптимальное значение для OPUS кодека, который поддерживает диапазон 2мс-120мс)
 
 ## 📄 Лицензии
 
@@ -320,12 +398,14 @@ ssh -R 80:localhost:8443 localhost.run
 | [github.com/jj11hh/opus](https://github.com/jj11hh/opus) | v1.0.1 | OPUS аудио кодека |
 | [go.uber.org/zap](https://go.uber.org/zap) | v1.27.0 | Структурированное логирование |
 | [github.com/klauspost/compress](https://github.com/klauspost/compress) | v1.18.1 | Zstandard сжатие |
+| [golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto) | v0.43.0 | Шифрование (NaCl Box) |
 
 - **PortAudio**: MIT License - см. [licenses/gordonklaus-portaudio_LICENSE.txt](licenses/gordonklaus-portaudio_LICENSE.txt)
 - **Gorilla WebSocket**: BSD 2-Clause License - см. [licenses/gorilla-websocket_LICENSE.txt](licenses/gorilla-websocket_LICENSE.txt)
-- **Go Opus**: MIT License - см. [licenses/go-opus_LICENSE.txt](licenses/go-opus_LICENSE.txt)
+- **Opus**: MIT License - см. [licenses/hraban-opus_LICENSE.txt](licenses/hraban-opus_LICENSE.txt)
 - **Uber Zap**: MIT License - см. [licenses/uber-zap_LICENSE.txt](licenses/uber-zap_LICENSE.txt)
 - **Klauspost Compress**: Apache 2.0 License - см. [licenses/klauspost-compress_LICENSE.txt](licenses/klauspost-compress_LICENSE.txt)
+- **Go Crypto (x/crypto)**: BSD 3-Clause License - см. [licenses/x-crypto-nacl-box_LICENSE.txt](licenses/x-crypto-nacl-box_LICENSE.txt)
 
 ### Авторы OPUS библиотеки
 См. файл [AUTHORS_opus](AUTHORS_opus) для списка авторов Go Opus библиотеки.
