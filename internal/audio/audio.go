@@ -3,6 +3,7 @@ package audio
 import (
 	"sync"
 	"time"
+	"errors"
 
 	"go.uber.org/zap"
 	"github.com/gordonklaus/portaudio"
@@ -32,6 +33,9 @@ type AudioStream struct {
 	
 	playCmpr   *compressor.Compressor
 	recordCmpr *compressor.Compressor
+
+	inputDevice *portaudio.DeviceInfo
+	outputDevice *portaudio.DeviceInfo
 }
 
 func NewAS(log *zap.Logger) (*AudioStream, error) {
@@ -53,7 +57,7 @@ func NewAS(log *zap.Logger) (*AudioStream, error) {
 		return nil, err
 	}
 	queue := newQueue()
-	return &AudioStream{
+	as := &AudioStream{
 		log:        log,
 		dur:        time.Duration(dur),
 		waitTime:   5,
@@ -73,7 +77,43 @@ func NewAS(log *zap.Logger) (*AudioStream, error) {
 		
 		playCmpr:   playCmpr,
 		recordCmpr: recordCmpr,
-	}, err
+	}
+
+	maxAttempts := 0
+	for (as.inputDevice == nil || as.outputDevice == nil) && maxAttempts <= 10 {
+		input, err := as.initInputDevice()
+		if err == nil {
+			as.inputDevice = input
+		}
+		output, err := as.initOutputDevice()
+		if err != nil {
+			as.outputDevice = output
+		}
+		maxAttempts++
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return as, nil
+}
+
+func (as *AudioStream) initInputDevice() (dev *portaudio.DeviceInfo, err error) {
+	defer func(){
+		if r := recover(); r != nil {
+			as.log.Error("Panic in init input device", zap.Any("recover",r))
+			err = errors.New("panic in get input device")
+		}
+	}()
+	dev, err = portaudio.DefaultInputDevice()
+	return
+}
+
+func (as *AudioStream) initOutputDevice() (*portaudio.DeviceInfo, error) {
+	defer func(){
+		if r := recover(); r != nil {
+			as.log.Error("Panic in init input device", zap.Any("recover",r))
+		}
+	}()
+	return portaudio.DefaultOutputDevice()
 }
 
 func (as *AudioStream) RecordStream() {
