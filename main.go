@@ -1,10 +1,13 @@
 package main
 
 import (
+	"os"
 	"fmt"
 	"sync"
 	"flag"
+	"bufio"
 	"context"
+	"strings"
 
 	"go.uber.org/zap"
 	"github.com/jj11hh/opus"
@@ -68,21 +71,39 @@ func main() {
 		portaudio.Terminate()
 	}()
 	
-	var choice string
-	fmt.Scanln(&choice)
-
-	srv, err := server.Setup(log)
+	fmt.Printf("Enter mode (server/srv or client/clt): ")
+	reader := bufio.NewReader(os.Stdin)
+	choice, err := reader.ReadString('\n')
 	if err != nil {
-		log.Fatal("Couldn't create server: ", zap.Error(err))
+		log.Fatal("Failed to read VIZ mode", zap.Error(err))
 	}
+	choice = strings.TrimSpace(choice)
 
-	if err := srv.ListenAndServe(); err != nil && (choice == "server" || choice == "srv") {
-		log.Fatal("HTTPS server failed: ", zap.Error(err))
+	if choice == "server" || choice == "srv" {
+		fmt.Print("Enter server port(default 8080): ")
+		port, err := reader.ReadString('\n')
+		port = strings.TrimSpace(port)
+		if err != nil {
+			log.Warn("Failed to read server port, default 8080")
+			port = "8080"
+		}
+		srv, err := server.Setup(port, log)
+		if err != nil {
+			log.Fatal("Couldn't create server: ", zap.Error(err))
+		}
+
+		if err := srv.ListenAndServe(); err != nil && (choice == "server" || choice == "srv") {
+			log.Fatal("HTTPS server failed: ", zap.Error(err))
+		}
 	}
-
+	
 	if choice == "client" || choice == "clt" {
-		var url string
-		fmt.Scanln(&url)
+		fmt.Printf("Enter server URL: ")
+		url, err := reader.ReadString('\n')
+		url = strings.TrimSpace(url)
+		if err != nil {
+			log.Fatal("Failed to read server URL", zap.Error(err))
+		}
 		if err := client.StartCall(url, log); err != nil {
 			log.Fatal("Error in StartCall client", zap.Error(err))
 			return

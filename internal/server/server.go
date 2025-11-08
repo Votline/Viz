@@ -10,7 +10,7 @@ import (
 	"Viz/internal/session"
 )
 
-func Setup(log *zap.Logger) (*http.Server, error) {
+func Setup(port string, log *zap.Logger) (*http.Server, error) {
 	upgrader := &websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true
@@ -24,7 +24,7 @@ func Setup(log *zap.Logger) (*http.Server, error) {
 
 	srv := &http.Server{
 		Handler:      mux,
-		Addr:         ":8443",
+		Addr:         ":"+port,
 		ReadTimeout:  28 * time.Second,
 		WriteTimeout: 28 * time.Second,
 		IdleTimeout:  28 * time.Second,
