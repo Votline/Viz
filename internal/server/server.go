@@ -1,16 +1,20 @@
+// Package server run http server annd upgrade connection to websocket
 package server
 
 import (
-	"time"
+	"fmt"
 	"net/http"
+	"time"
 
-	"go.uber.org/zap"
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 
 	"Viz/internal/session"
 )
 
 func Setup(port string, log *zap.Logger) (*http.Server, error) {
+	const op = "server.Run"
+
 	upgrader := &websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true
@@ -18,13 +22,12 @@ func Setup(port string, log *zap.Logger) (*http.Server, error) {
 	}
 	mux, err := routing(log, upgrader)
 	if err != nil {
-		log.Error("Couldn't create handler: ", zap.Error(err))
-		return nil, err
+		return nil, fmt.Errorf("%s: Error in routing: %w", op, err)
 	}
 
 	srv := &http.Server{
 		Handler:      mux,
-		Addr:         ":"+port,
+		Addr:         ":" + port,
 		ReadTimeout:  28 * time.Second,
 		WriteTimeout: 28 * time.Second,
 		IdleTimeout:  28 * time.Second,
@@ -34,28 +37,35 @@ func Setup(port string, log *zap.Logger) (*http.Server, error) {
 }
 
 func routing(log *zap.Logger, upg *websocket.Upgrader) (*http.ServeMux, error) {
+	const op = "server.routing"
+
 	mux := http.NewServeMux()
-
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("use 'url/ws'"))
-	})
-
-	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		log.Info("WS handshake starting")
+		log.Debug("WS handshake starting",
+			zap.String("op", op))
 
 		conn, err := upg.Upgrade(w, r, nil)
 		if err != nil {
-			log.Error("WS upgrade failed: ", zap.Error(err))
+			http.Error(w,
+				"Could not upgrade to websocket protocol: "+err.Error(),
+				http.StatusInternalServerError)
+			log.Error("WS upgrade failed: ",
+				zap.String("op", op),
+				zap.Error(err))
 			return
 		}
 		defer conn.Close()
-		log.Info("WS connection established")
-		
+		log.Info("WS connection established",
+			zap.String("op", op))
+
 		if err := session.StartSession(conn, log); err != nil {
-			log.Error("Error in session", zap.Error(err))
+			log.Error("Error in session",
+				zap.String("op", op),
+				zap.Error(err))
 		}
 
-		log.Info("WS connection closed")
+		log.Info("WS connection closed",
+			zap.String("op", op))
 	})
 
 	return mux, nil

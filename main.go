@@ -1,112 +1,71 @@
+// Package main parses cli arguments and starts the server or client
 package main
 
 import (
-	"os"
 	"fmt"
-	"sync"
-	"flag"
-	"bufio"
-	"context"
-	"strings"
-
-	"go.uber.org/zap"
-	"github.com/jj11hh/opus"
-	"go.uber.org/zap/zapcore"
-	"github.com/gordonklaus/portaudio"
+	"os"
+	"slices"
 
 	"Viz/internal/client"
 	"Viz/internal/server"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
-var (
-	once sync.Once
-	onceErr error
-)
+const helpMsg = `
+Usage: (choose your way):
+	1. Run as server: ./viz -s <port> <args>
+	2. Run as client: ./viz -c <url> <args>
 
-func setupLog() *zap.Logger {
-	cfg := zap.NewDevelopmentConfig()
-	cfg.EncoderConfig.TimeKey = "time"
-	cfg.EncoderConfig.LevelKey = "level"
-	cfg.EncoderConfig.MessageKey = "msg"
-	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-
-	var logLevel string
-	flag.StringVar(&logLevel, "level", "info", "set log level\ninfo/warn/fatal/100 or ignore")
-	flag.Parse()
-
-	switch logLevel {
-	case "debug":
-		cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
-	case "warn":
-		cfg.Level = zap.NewAtomicLevelAt(zapcore.WarnLevel)
-	case "error":
-		cfg.Level = zap.NewAtomicLevelAt(zapcore.ErrorLevel)
-	case "fatal":
-		cfg.Level = zap.NewAtomicLevelAt(zapcore.FatalLevel)
-	case "100", "ignore":
-		cfg.Level = zap.NewAtomicLevelAt(100)
-	default:
-		cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
-	}
-
-	cfg.EncoderConfig.TimeKey = ""
-	log, _ := cfg.Build()
-	return log
-}
-
+Arguments:
+	'-d' or 'debug' to enable debug mode
+	'-h' or 'help' to print this message
+`
 
 func main() {
-	log := setupLog()
-
-	ctx := context.Background()
-	once.Do(func(){
-		if onceErr = portaudio.Initialize(); onceErr != nil {
-			log.Fatal("PortAudio init error: ", zap.Error(onceErr))
-			return
-		}
-	})
-
-	defer func() {
-		opus.CloseWasmContext(ctx)
-		portaudio.Terminate()
-	}()
-	
-	fmt.Printf("Enter mode (server/srv or client/clt): ")
-	reader := bufio.NewReader(os.Stdin)
-	choice, err := reader.ReadString('\n')
-	if err != nil {
-		log.Fatal("Failed to read VIZ mode", zap.Error(err))
+	args := os.Args[1:]
+	if len(args) < 2 || args[0] == "-h" || args[0] == "help" {
+		fmt.Print(helpMsg)
+		return
 	}
-	choice = strings.TrimSpace(choice)
 
-	if choice == "server" || choice == "srv" {
-		fmt.Print("Enter server port(default 8080): ")
-		port, err := reader.ReadString('\n')
-		port = strings.TrimSpace(port)
-		if err != nil {
-			log.Warn("Failed to read server port, default 8080")
-			port = "8080"
-		}
+	dbg := slices.Contains(args, "-d") || slices.Contains(args, "debug")
+	log := initLog(dbg)
+
+	switch args[0] {
+	case "-s":
+		port := args[1]
 		srv, err := server.Setup(port, log)
 		if err != nil {
-			log.Fatal("Couldn't create server: ", zap.Error(err))
+			log.Fatal("Setup server error: ", zap.Error(err))
 		}
+		if err := srv.ListenAndServe(); err != nil {
+			log.Fatal("Run server error: ", zap.Error(err))
+		}
+	case "-c":
+		url := args[1]
+		if err := client.Run(url, log); err != nil {
+			log.Fatal("Run client error: ", zap.Error(err))
+		}
+	default:
+		fmt.Println("Wrong arguments. Use -h or help to print help message")
+	}
+}
 
-		if err := srv.ListenAndServe(); err != nil && (choice == "server" || choice == "srv") {
-			log.Fatal("HTTPS server failed: ", zap.Error(err))
-		}
+func initLog(dbg bool) *zap.Logger {
+	cfg := zap.NewDevelopmentConfig()
+	cfg.Encoding = "console"
+	cfg.EncoderConfig.TimeKey = ""
+	cfg.DisableStacktrace = true
+	cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	cfg.EncoderConfig.ConsoleSeparator = " | "
+	cfg.Level.SetLevel(zap.ErrorLevel)
+
+	if dbg {
+		cfg.Level.SetLevel(zap.DebugLevel)
 	}
-	
-	if choice == "client" || choice == "clt" {
-		fmt.Printf("Enter server URL: ")
-		url, err := reader.ReadString('\n')
-		url = strings.TrimSpace(url)
-		if err != nil {
-			log.Fatal("Failed to read server URL", zap.Error(err))
-		}
-		if err := client.StartCall(url, log); err != nil {
-			log.Fatal("Error in StartCall client", zap.Error(err))
-			return
-		}
-	}
+	log, _ := cfg.Build()
+
+	return log
 }
