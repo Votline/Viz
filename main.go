@@ -40,6 +40,7 @@ func main() {
 		if err != nil {
 			log.Fatal("Setup server error: ", zap.Error(err))
 		}
+		log.Debug("Server started", zap.String("port", port))
 		if err := srv.ListenAndServe(); err != nil {
 			log.Fatal("Run server error: ", zap.Error(err))
 		}
