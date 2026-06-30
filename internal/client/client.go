@@ -2,23 +2,32 @@
 package client
 
 import (
-	"github.com/gorilla/websocket"
+	"fmt"
+	"net"
+
 	"go.uber.org/zap"
 
 	"Viz/internal/session"
 )
 
 func Run(serverURL string, log *zap.Logger) error {
-	conn, _, err := websocket.DefaultDialer.Dial(serverURL, nil)
+	const op = "client.Run"
+
+	rAddr, err := net.ResolveUDPAddr("udp", serverURL)
 	if err != nil {
-		log.Error("Error in dialing server", zap.Error(err))
-		return err
+		return fmt.Errorf("%s: resolve udp addr: %w", op, err)
+	}
+	conn, err := net.DialUDP("udp", nil, rAddr)
+	if err != nil {
+		return fmt.Errorf("%s: dial udp: %w", op, err)
 	}
 	defer conn.Close()
 
-	if err := session.StartSession(conn, log); err != nil {
-		log.Error("Error in session", zap.Error(err))
-		return err
+	log.Debug("Dialed UDP connection",
+		zap.String("op", op))
+
+	if err := session.StartSession(conn, false, log); err != nil {
+		return fmt.Errorf("%s: start session: %w", op, err)
 	}
 
 	return nil

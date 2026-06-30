@@ -36,13 +36,8 @@ func main() {
 	switch args[0] {
 	case "-s":
 		port := args[1]
-		srv, err := server.Setup(port, log)
-		if err != nil {
-			log.Fatal("Setup server error: ", zap.Error(err))
-		}
-		log.Debug("Server started", zap.String("port", port))
-		if err := srv.ListenAndServe(); err != nil {
-			log.Fatal("Run server error: ", zap.Error(err))
+		if err := server.Run(port, log); err != nil {
+			log.Fatal("Server error: ", zap.Error(err))
 		}
 	case "-c":
 		url := args[1]

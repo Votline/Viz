@@ -6,10 +6,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"net"
 	"sync/atomic"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 
 	"Viz/internal/audio"
@@ -25,18 +25,20 @@ const (
 )
 
 type Session struct {
-	conn    *websocket.Conn
-	log     *zap.Logger
-	recBuf  *ringbuffer.RingBuffer[byte]
-	playBuf *ringbuffer.RingBuffer[byte]
-	enc     *encryptor.Encryptor
-	errCom  atomic.Value
-	warnCom atomic.Value
+	conn     *net.UDPConn
+	addr     *net.UDPAddr
+	log      *zap.Logger
+	recBuf   *ringbuffer.RingBuffer[byte]
+	playBuf  *ringbuffer.RingBuffer[byte]
+	enc      *encryptor.Encryptor
+	errCom   *atomic.Value
+	warnCom  *atomic.Value
+	isServer bool
 }
 
 // StartSession initialize audio client, encryptor, ringbuffers and websocket connection
 // starts sending voice and appending voice to ringbuffers in goroutines
-func StartSession(conn *websocket.Conn, log *zap.Logger) error {
+func StartSession(conn *net.UDPConn, isServer bool, log *zap.Logger) error {
 	const op = "session.StartSession"
 
 	acl, err := audio.NewAudioStream(log)
@@ -47,7 +49,7 @@ func StartSession(conn *websocket.Conn, log *zap.Logger) error {
 	log.Debug("Audio stream created",
 		zap.String("op", op))
 
-	enc, err := encryptor.Setup(log, conn)
+	enc, remoteAddr, err := encryptor.Setup(conn, isServer, log)
 	if err != nil {
 		return fmt.Errorf("%s: setup encryptor: %w", op, err)
 	}
@@ -67,13 +69,19 @@ func StartSession(conn *websocket.Conn, log *zap.Logger) error {
 	defer cancel()
 
 	sess := &Session{
-		conn:    conn,
-		log:     log,
-		recBuf:  recBuf,
-		playBuf: playBuf,
-		errCom:  errCom,
-		warnCom: warnCom,
-		enc:     enc,
+		conn:     conn,
+		log:      log,
+		recBuf:   recBuf,
+		playBuf:  playBuf,
+		errCom:   &errCom,
+		warnCom:  &warnCom,
+		enc:      enc,
+		addr:     remoteAddr,
+		isServer: isServer,
+	}
+
+	if err := acl.AutoRouteMonitor(); err != nil {
+		return fmt.Errorf("%s: auto route monitor: %w", op, err)
 	}
 
 	go func() {
@@ -140,7 +148,7 @@ func (s *Session) sendVoice() {
 			break // closed
 		}
 
-		s.log.Warn("Read voice chunk",
+		s.log.Debug("Read voice chunk",
 			zap.String("op", op),
 			zap.Uint32("size", size))
 
@@ -153,9 +161,16 @@ func (s *Session) sendVoice() {
 
 		if len(batchBuffer) >= batchSize {
 			packedBatch := batch.PackBatch(batchBuffer)
-			if err := s.conn.WriteMessage(websocket.BinaryMessage, packedBatch); err != nil {
-				s.errCom.Store(fmt.Errorf("%s: write message: %w", op, err))
-				return
+			if s.isServer {
+				if _, err := s.conn.WriteToUDP(packedBatch, s.addr); err != nil {
+					s.errCom.Store(fmt.Errorf("%s: write message: %w", op, err))
+					return
+				}
+			} else {
+				if _, err := s.conn.Write(packedBatch); err != nil {
+					s.errCom.Store(fmt.Errorf("%s: write message: %w", op, err))
+					return
+				}
 			}
 			batchBuffer = batchBuffer[:0]
 			s.log.Debug("Written batch",
@@ -171,8 +186,9 @@ func (s *Session) appendVoice() {
 	const op = "session.appendVoice"
 
 	var sizeBuf [4]byte
+	packetBuffer := make([]byte, bufferSize/4)
 	for {
-		_, msg, err := s.conn.ReadMessage()
+		n, _, err := s.conn.ReadFromUDP(packetBuffer)
 		if err != nil {
 			s.errCom.Store(fmt.Errorf("%s: read message: %w", op, err))
 			return
@@ -180,9 +196,9 @@ func (s *Session) appendVoice() {
 
 		s.log.Debug("Read message",
 			zap.String("op", op),
-			zap.Int("size", len(msg)))
+			zap.Int("size", n))
 
-		frames, err := batch.UnpackBatch(msg)
+		frames, err := batch.UnpackBatch(packetBuffer[:n])
 		if err != nil {
 			s.warnCom.Store(fmt.Errorf("%s: unpack batch: %w", op, err))
 			continue
